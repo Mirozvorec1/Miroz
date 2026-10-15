@@ -107,12 +107,6 @@ window.__LocalStore = (function () {
     write(KEY_VIEW + projectId, view);
   }
 
-  // --- Присутствие (в локальном режиме недоступно) ---
-
-  async function setPresence() {}
-  async function clearPresence() {}
-  function subscribePresence() { return function unsubscribe() {}; }
-
   return {
     listProjects,
     getProject,
@@ -126,9 +120,6 @@ window.__LocalStore = (function () {
     subscribeNodes,
     getView,
     saveView,
-    setPresence,
-    clearPresence,
-    subscribePresence,
     uid
   };
 })();

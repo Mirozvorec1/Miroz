@@ -115,7 +115,7 @@ window.Board = (function () {
     });
 
     presenceUsers = [];
-    presenceUnsub = window.Store.subscribePresence(pid, renderCursors, handleError);
+    presenceUnsub = window.Presence.subscribe(pid, renderCursors, handleError);
     presencePruneTimer = setInterval(() => renderCursors(presenceUsers), 5000);
   }
 
@@ -124,9 +124,7 @@ window.Board = (function () {
     if (presenceUnsub) { presenceUnsub(); presenceUnsub = null; }
     if (presencePruneTimer) { clearInterval(presencePruneTimer); presencePruneTimer = null; }
     if (presenceTrailTimer) { clearTimeout(presenceTrailTimer); presenceTrailTimer = null; }
-    if (projectId && window.Store.clearPresence) {
-      window.Store.clearPresence(projectId).catch(() => {});
-    }
+    if (projectId) window.Presence.leave(projectId);
     cursorEls.forEach(el => el.remove());
     cursorEls.clear();
     presenceUsers = [];
@@ -269,31 +267,30 @@ window.Board = (function () {
   function renderCursors(users) {
     presenceUsers = Array.isArray(users) ? users : [];
     const layer = document.getElementById('cursors');
-    const me = myIdentity();
     const now = Date.now();
     const alive = new Set();
 
     if (layer) {
       presenceUsers.forEach(u => {
-        if (!u || !u.uid || u.uid === me.uid) return;        // себя не рисуем
+        if (!u || !u.sessionId) return;                        // себя Presence уже отфильтровал
         if (now - (u.updatedAt || 0) > PRESENCE_TTL) return;  // устаревшие скрываем
-        alive.add(u.uid);
+        alive.add(u.sessionId);
 
-        let el = cursorEls.get(u.uid);
+        let el = cursorEls.get(u.sessionId);
         if (!el) {
           el = createCursorEl();
-          cursorEls.set(u.uid, el);
+          cursorEls.set(u.sessionId, el);
           layer.appendChild(el);
         }
-        const color = u.color || colorFor(u.uid);
+        const color = u.color || colorFor(u.uid || u.sessionId);
         if (el._color !== color) { el._color = color; el.style.setProperty('--c', color); }
         const name = u.name || 'Гость';
         if (el._name !== name) { el._name = name; el.querySelector('.cursor__name').textContent = name; }
         positionCursor(el, Number(u.x) || 0, Number(u.y) || 0);
       });
 
-      cursorEls.forEach((el, uid) => {
-        if (!alive.has(uid)) { el.remove(); cursorEls.delete(uid); }
+      cursorEls.forEach((el, sid) => {
+        if (!alive.has(sid)) { el.remove(); cursorEls.delete(sid); }
       });
     }
 
@@ -330,10 +327,11 @@ window.Board = (function () {
   // --- Отправка своей позиции курсора ---
 
   function onCursorMove(e) {
-    if (!projectId || !window.Store.setPresence) return;
+    if (!projectId || !window.Presence.enabled()) return;
     const me = myIdentity();
     const p = screenToWorld(e.clientX, e.clientY);
     latestPresence = {
+      uid: me.uid,
       name: me.name,
       color: colorFor(me.uid),
       x: Math.round(p.x),
@@ -353,11 +351,11 @@ window.Board = (function () {
 
   function sendPresence() {
     lastPresenceSent = Date.now();
-    if (latestPresence) window.Store.setPresence(projectId, latestPresence).catch(() => {});
+    if (latestPresence) window.Presence.update(projectId, latestPresence);
   }
 
   function onBeforeUnload() {
-    if (projectId && window.Store.clearPresence) window.Store.clearPresence(projectId);
+    if (projectId) window.Presence.leave(projectId);
   }
 
   // --- События ---

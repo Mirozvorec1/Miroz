@@ -1,9 +1,7 @@
 // Конфигурация приложения.
 //
-// Сейчас работает локальный режим (localStorage).
-// Чтобы подключить Firebase — заполните config ниже,
-// включите firebaseConfig.enabled = true и подключите SDK
-// (см. комментарий в js/storage.js).
+// Firebase: Firestore — данные (проекты, элементы доски),
+// Realtime Database — присутствие (курсоры). Включено, если enabled: true.
 
 window.APP_CONFIG = {
   appName: 'Miroz',
@@ -23,6 +21,11 @@ window.APP_CONFIG = {
     storageBucket: "miroz-a66a1.firebasestorage.app",
     messagingSenderId: "157645749621",
     appId: "1:157645749621:web:2d5b00f65fc1e9a116273c",
-    measurementId: "G-WVSX8X6S11"
+    measurementId: "G-WVSX8X6S11",
+
+    // Realtime Database (для курсоров). URL из Firebase Console →
+    // Realtime Database (строка вверху страницы).
+    databaseURL: "https://miroz-a66a1-default-rtdb.europe-west1.firebasedatabase.app"
   }
 };
+

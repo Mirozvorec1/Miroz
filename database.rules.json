@@ -1,0 +1,10 @@
+{
+  "rules": {
+    "presence": {
+      "$projectId": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    }
+  }
+}

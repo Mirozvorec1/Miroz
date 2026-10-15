@@ -37,8 +37,6 @@
 
   function projectsCol() { return db.collection('projects'); }
   function nodesCol(pid) { return projectsCol().doc(pid).collection('nodes'); }
-  function presenceCol(pid) { return projectsCol().doc(pid).collection('presence'); }
-  function myUid() { return window.currentUser ? window.currentUser.uid : 'anon'; }
   function viewKey(pid) { return 'miroz.view.' + pid; }
 
   // ---------- FirestoreStore ----------
@@ -162,25 +160,6 @@
 
     async saveView(projectId, view) {
       localStorage.setItem(viewKey(projectId), JSON.stringify(view));
-    },
-
-    // --- Присутствие: курсоры и онлайн-статус ---
-
-    async setPresence(projectId, data) {
-      await presenceCol(projectId).doc(myUid()).set(data);
-    },
-
-    async clearPresence(projectId) {
-      await presenceCol(projectId).doc(myUid()).delete().catch(() => {});
-    },
-
-    subscribePresence(projectId, onChange, onError) {
-      return presenceCol(projectId).onSnapshot(snap => {
-        onChange(snap.docs.map(d => ({ uid: d.id, ...d.data() })));
-      }, err => {
-        console.error('[presence] snapshot error:', err);
-        if (onError) onError(err);
-      });
     }
   };
 
