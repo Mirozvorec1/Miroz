@@ -131,6 +131,10 @@
         createdBy: user ? user.uid : 'anon',
         updatedAt: Date.now()
       };
+      if (node.fontFamily) data.fontFamily = node.fontFamily;
+      if (node.fontSize) data.fontSize = node.fontSize;
+      if (node.color) data.color = node.color;
+      if (node.align) data.align = node.align;
       await nodesCol(projectId).doc(node.id).set(data);
       await projectsCol().doc(projectId).update({ updatedAt: Date.now() }).catch(() => {});
     },

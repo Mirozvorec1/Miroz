@@ -8,8 +8,30 @@ window.Board = (function () {
   let viewport, world;
   let gridEl = null;   // фон-сетка (живёт в viewport, тайлится бесконечно)
   let selBox = null;   // рамка вокруг группы выделенных элементов
+  let textToolbar = null; // плавающая панель форматирования текста
+  let toolbarNodeId = null;
+  let toolbarMenu = null; // открытое подменю панели
+  let savedRange = null;  // сохранённое выделение внутри текста
   let projectId = null;
   let unsubscribe = null;
+
+  const FONT_FAMILIES = [
+    { label: 'Sans', value: '' },
+    { label: 'Serif', value: 'Georgia, "Times New Roman", serif' },
+    { label: 'Mono', value: '"Courier New", monospace' },
+    { label: 'Rounded', value: 'Verdana, Geneva, sans-serif' },
+    { label: 'Casual', value: '"Comic Sans MS", "Segoe UI", cursive' }
+  ];
+  const FONT_SIZES = [
+    { label: 'Small', value: 14 },
+    { label: 'Medium', value: 20 },
+    { label: 'Large', value: 28 },
+    { label: 'Huge', value: 40 }
+  ];
+  const TEXT_COLORS = [
+    '#1a1a1a', '#6b7280', '#ffffff', '#e5484d', '#f76808',
+    '#ffb224', '#30a46c', '#0091ff', '#8e4ec6', '#e93d82'
+  ];
 
   const nodes = new Map();      // id -> данные узла
   const nodeEls = new Map();    // id -> DOM-элемент
@@ -80,8 +102,17 @@ window.Board = (function () {
     selBox.className = 'sel-box hidden';
     viewport.appendChild(selBox);
 
+    buildTextToolbar();
+
     const hint = document.getElementById('canvas-hint');
     if (hint) hint.textContent = 'ЛКМ — выделение и рамка, СКМ — перемещение доски';
+
+    // Сохраняем выделение внутри редактируемого текста, чтобы панель
+    // форматирования не «теряла» его при кликах по кнопкам.
+    document.addEventListener('selectionchange', () => {
+      const el = toolbarNodeId && nodeEls.get(toolbarNodeId);
+      if (el && document.activeElement === el) saveSelection();
+    });
 
     bindEvents();
   }
@@ -97,6 +128,7 @@ window.Board = (function () {
     const zv = document.getElementById('zoom-value');
     if (zv) zv.textContent = Math.round(view.scale * 100) + '%';
     updateSelectionBox();
+    updateTextToolbar();
   }
 
   function scheduleViewSave() {
@@ -168,6 +200,8 @@ window.Board = (function () {
     presenceUsers = [];
     lockState = { owners: new Map(), colorOf: new Map(), nameOf: new Map(), self: null };
     latestPresence = null;
+    hideTextToolbar();
+    savedRange = null;
     selectedIds.clear();
     history.length = 0;
     dragGroup = null;
@@ -198,9 +232,13 @@ window.Board = (function () {
       el.style.left = node.x + 'px';
       el.style.top = node.y + 'px';
     }
+    ['fontFamily', 'fontSize', 'color', 'align'].forEach(k => {
+      if (node[k] !== undefined) local[k] = node[k];
+    });
+    applyNodeTextStyle(el, local);
     if (!editing) {
       local.text = node.text;
-      el.textContent = node.text;
+      el.innerHTML = sanitizeHtml(node.text || '');
     }
   }
 
@@ -218,13 +256,14 @@ window.Board = (function () {
     el.dataset.id = node.id;
     el.style.left = node.x + 'px';
     el.style.top = node.y + 'px';
-    el.textContent = node.text || '';
+    el.innerHTML = sanitizeHtml(node.text || '');
+    applyNodeTextStyle(el, node);
     if (selectedIds.has(node.id)) el.classList.add('is-selected');
 
     if (node.type === 'sticky' || node.type === 'text') {
       el.contentEditable = 'true';
       el.addEventListener('input', () => {
-        node.text = el.textContent;
+        node.text = el.innerHTML;
         scheduleTextSave(node.id);
       });
       // История правки текста: фиксируем значение до и после редактирования.
@@ -232,13 +271,12 @@ window.Board = (function () {
       el.addEventListener('blur', () => {
         if (el._textBefore !== undefined && el._textBefore !== node.text) {
           const before = el._textBefore;
-          const after = node.text || '';
           el._textBefore = undefined;
           pushHistory({ undo: () => {
             const n = nodes.get(node.id);
             const nodeEl = nodeEls.get(node.id);
             if (n) n.text = before;
-            if (nodeEl) nodeEl.textContent = before;
+            if (nodeEl) nodeEl.innerHTML = sanitizeHtml(before);
             if (projectId) window.Store.updateNode(projectId, node.id, { text: before }).catch(handleError);
           } });
         }
@@ -247,6 +285,37 @@ window.Board = (function () {
     applyLockState(el, node.id);
     nodeEls.set(node.id, el);
     world.appendChild(el);
+  }
+
+  function applyNodeTextStyle(el, node) {
+    el.style.fontFamily = node.fontFamily || '';
+    el.style.fontSize = node.fontSize ? node.fontSize + 'px' : '';
+    el.style.color = node.color || '';
+    el.style.textAlign = node.align || '';
+  }
+
+  // Защита от вставки чужого HTML: убираем скрипты и опасные обработчики.
+  function sanitizeHtml(html) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html == null ? '' : String(html);
+    tmp.querySelectorAll('script, style, iframe, object, embed, link, meta, form, input, button')
+      .forEach(n => n.remove());
+    const walk = document.createTreeWalker(tmp, NodeFilter.SHOW_ELEMENT);
+    while (walk.nextNode()) {
+      const el = walk.currentNode;
+      Array.prototype.slice.call(el.attributes).forEach(a => {
+        const name = a.name.toLowerCase();
+        if (name.startsWith('on')) el.removeAttribute(a.name);
+        else if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(a.value)) {
+          el.removeAttribute(a.name);
+        }
+      });
+      if (el.tagName === 'A') {
+        el.setAttribute('target', '_blank');
+        el.setAttribute('rel', 'noopener noreferrer');
+      }
+    }
+    return tmp.innerHTML;
   }
 
   function scheduleTextSave(id) {
@@ -303,6 +372,7 @@ window.Board = (function () {
       el.classList.toggle('is-in-group', on && multi);
     });
     updateSelectionBox();
+    updateTextToolbar();
   }
 
   // Рамка вокруг всей выделенной группы (в экранных координатах).
@@ -329,6 +399,245 @@ window.Board = (function () {
     selBox.style.width = (b.x - a.x) + 'px';
     selBox.style.height = (b.y - a.y) + 'px';
     selBox.classList.remove('hidden');
+  }
+
+  // --- Плавающая панель форматирования текста ---
+
+  function buildTextToolbar() {
+    textToolbar = document.createElement('div');
+    textToolbar.className = 'text-toolbar hidden';
+    textToolbar.innerHTML =
+      '<button class="tt-btn" data-menu="color" title="Цвет текста"><span class="tt-dot"></span><span class="tt-caret">▾</span></button>' +
+      '<button class="tt-btn" data-menu="font" title="Шрифт"><span class="tt-label" data-role="font">Sans</span><span class="tt-caret">▾</span></button>' +
+      '<button class="tt-btn" data-menu="size" title="Размер текста"><span class="tt-label" data-role="size">Small</span><span class="tt-caret">▾</span></button>' +
+      '<span class="tt-sep"></span>' +
+      '<button class="tt-btn" data-cmd="bold" title="Жирный"><b>B</b></button>' +
+      '<button class="tt-btn" data-cmd="italic" title="Курсив"><i>I</i></button>' +
+      '<button class="tt-btn" data-cmd="strikeThrough" title="Зачёркнутый"><s>S</s></button>' +
+      '<button class="tt-btn" data-cmd="link" title="Ссылка">🔗</button>' +
+      '<button class="tt-btn" data-cmd="insertUnorderedList" title="Маркированный список">☰</button>' +
+      '<button class="tt-btn" data-cmd="insertOrderedList" title="Нумерованный список">1.</button>' +
+      '<span class="tt-sep"></span>' +
+      '<button class="tt-btn" data-menu="align" title="Выравнивание"><span class="tt-label" data-role="align">⯇</span><span class="tt-caret">▾</span></button>';
+
+    const menus = [
+      { name: 'color', color: true, items: TEXT_COLORS.map(c => ({ value: c })) },
+      { name: 'font', items: FONT_FAMILIES.map(f => ({ label: f.label, value: f.value })) },
+      { name: 'size', items: FONT_SIZES.map(s => ({ label: s.label, value: String(s.value) })).concat([{ label: 'Свой…', value: 'custom' }]) },
+      { name: 'align', items: [
+        { label: '⯇  По левому краю', value: 'left' },
+        { label: '≡  По центру', value: 'center' },
+        { label: '⯈  По правому краю', value: 'right' }
+      ] }
+    ];
+
+    menus.forEach(m => {
+      const menu = document.createElement('div');
+      menu.className = 'tt-menu hidden';
+      menu.dataset.menuFor = m.name;
+      if (m.color) menu.classList.add('tt-colors');
+      m.items.forEach(it => {
+        const b = document.createElement('button');
+        b.className = 'tt-menu__item';
+        b.dataset.value = it.value;
+        if (m.color) b.innerHTML = '<span class="tt-swatch" style="background:' + it.value + '"></span>';
+        else b.textContent = it.label;
+        menu.appendChild(b);
+      });
+      textToolbar.appendChild(menu);
+    });
+
+    // Клик по кнопкам не должен красть фокус/выделение у текста.
+    textToolbar.addEventListener('mousedown', (e) => {
+      if (e.target.closest('button')) e.preventDefault();
+    });
+
+    textToolbar.addEventListener('click', (e) => {
+      const menuBtn = e.target.closest('[data-menu]');
+      if (menuBtn) { toggleToolbarMenu(menuBtn); return; }
+
+      const item = e.target.closest('[data-value]');
+      if (item) { pickToolbarMenu(item); return; }
+
+      const cmdBtn = e.target.closest('[data-cmd]');
+      if (cmdBtn) {
+        const cmd = cmdBtn.dataset.cmd;
+        if (cmd === 'link') {
+          saveSelection();
+          const url = prompt('Ссылка (URL):', 'https://');
+          if (url) runTextCommand('createLink', url);
+          return;
+        }
+        runTextCommand(cmd);
+      }
+    });
+
+    viewport.appendChild(textToolbar);
+  }
+
+  function toggleToolbarMenu(btn) {
+    const name = btn.dataset.menu;
+    const menu = textToolbar.querySelector('.tt-menu[data-menu-for="' + name + '"]');
+    if (!menu) return;
+    if (toolbarMenu && toolbarMenu !== menu) toolbarMenu.classList.add('hidden');
+    if (menu.classList.contains('hidden')) {
+      menu.style.left = btn.offsetLeft + 'px';
+      menu.classList.remove('hidden');
+      toolbarMenu = menu;
+    } else {
+      menu.classList.add('hidden');
+      toolbarMenu = null;
+    }
+  }
+
+  function closeToolbarMenu() {
+    if (toolbarMenu) { toolbarMenu.classList.add('hidden'); toolbarMenu = null; }
+  }
+
+  function pickToolbarMenu(item) {
+    const menu = item.closest('.tt-menu');
+    const name = menu ? menu.dataset.menuFor : null;
+    const value = item.dataset.value;
+    closeToolbarMenu();
+    if (!toolbarNodeId || !name) return;
+
+    if (name === 'color') setNodeStyle(toolbarNodeId, { color: value });
+    else if (name === 'font') setNodeStyle(toolbarNodeId, { fontFamily: value });
+    else if (name === 'align') setNodeStyle(toolbarNodeId, { align: value });
+    else if (name === 'size') {
+      if (value === 'custom') {
+        const n = nodes.get(toolbarNodeId);
+        const input = prompt('Размер текста, px:', String((n && n.fontSize) || 14));
+        if (input == null) return;
+        const px = Math.round(Number(input));
+        if (!isFinite(px) || px < 6 || px > 400) return;
+        setNodeStyle(toolbarNodeId, { fontSize: px });
+      } else {
+        setNodeStyle(toolbarNodeId, { fontSize: Number(value) });
+      }
+    }
+  }
+
+  function setLabel(role, text) {
+    const el = textToolbar && textToolbar.querySelector('[data-role="' + role + '"]');
+    if (el) el.textContent = text;
+  }
+
+  function updateTextToolbar() {
+    if (!textToolbar) return;
+    const id = selectedIds.size === 1 ? [...selectedIds][0] : null;
+    const n = id && nodes.get(id);
+    const el = id && nodeEls.get(id);
+    if (!n || !el || (n.type !== 'text' && n.type !== 'sticky')) { hideTextToolbar(); return; }
+
+    toolbarNodeId = id;
+    textToolbar.classList.remove('hidden');
+
+    setLabel('font', (FONT_FAMILIES.find(f => f.value === (n.fontFamily || '')) || FONT_FAMILIES[0]).label);
+    const sz = n.fontSize || (n.type === 'text' ? 20 : 14);
+    const preset = FONT_SIZES.find(s => s.value === sz);
+    setLabel('size', preset ? preset.label : sz + 'px');
+    setLabel('align', (n.align === 'center') ? '≡' : (n.align === 'right' ? '⯈' : '⯇'));
+    const dot = textToolbar.querySelector('.tt-dot');
+    if (dot) dot.style.background = n.color || '#1a1a1a';
+
+    const focused = document.activeElement === el;
+    ['bold', 'italic', 'strikeThrough', 'insertUnorderedList', 'insertOrderedList'].forEach(c => {
+      const btn = textToolbar.querySelector('[data-cmd="' + c + '"]');
+      if (!btn) return;
+      let on = false;
+      if (focused) { try { on = document.queryCommandState(c); } catch (e) { /* ignore */ } }
+      btn.classList.toggle('is-active', on);
+    });
+
+    const r = el.getBoundingClientRect();
+    const vr = viewport.getBoundingClientRect();
+    const tw = textToolbar.offsetWidth;
+    const th = textToolbar.offsetHeight;
+    let left = r.left - vr.left + r.width / 2 - tw / 2;
+    left = Math.max(8, Math.min(left, vr.width - tw - 8));
+    let top = r.top - vr.top - th - 10;
+    if (top < 8) top = r.bottom - vr.top + 10;
+    textToolbar.style.left = left + 'px';
+    textToolbar.style.top = top + 'px';
+  }
+
+  function hideTextToolbar() {
+    if (!textToolbar) return;
+    closeToolbarMenu();
+    textToolbar.classList.add('hidden');
+    toolbarNodeId = null;
+  }
+
+  function saveSelection() {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount) savedRange = sel.getRangeAt(0).cloneRange();
+  }
+
+  function restoreSelection() {
+    if (!savedRange) return;
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    try { sel.addRange(savedRange); } catch (e) { /* ignore */ }
+  }
+
+  function setNodeStyle(id, patch) {
+    const n = nodes.get(id);
+    const el = nodeEls.get(id);
+    if (!n) return;
+    const before = { fontFamily: n.fontFamily, fontSize: n.fontSize, color: n.color, align: n.align };
+    Object.assign(n, patch);
+    if (el) applyNodeTextStyle(el, n);
+    if (projectId) window.Store.updateNode(projectId, id, patch).catch(handleError);
+    pushHistory({ undo: () => {
+      const nn = nodes.get(id);
+      const ne = nodeEls.get(id);
+      if (!nn) return;
+      Object.assign(nn, before);
+      if (ne) applyNodeTextStyle(ne, nn);
+      if (projectId) window.Store.updateNode(projectId, id, before).catch(() => {});
+    } });
+    updateTextToolbar();
+  }
+
+  function runTextCommand(cmd, arg) {
+    const id = toolbarNodeId;
+    const el = id && nodeEls.get(id);
+    const n = id && nodes.get(id);
+    if (!el || !n) return;
+    const before = n.text || '';
+    el.focus();
+    restoreSelection();
+    ensureSelectionIn(el);
+    try {
+      document.execCommand('styleWithCSS', false, cmd !== 'createLink');
+      document.execCommand(cmd, false, arg == null ? null : arg);
+    } catch (e) { console.error('[format]', e); }
+    n.text = el.innerHTML;
+    scheduleTextSave(id);
+    pushHistory({ undo: () => {
+      const nn = nodes.get(id);
+      const ne = nodeEls.get(id);
+      if (nn) nn.text = before;
+      if (ne) ne.innerHTML = sanitizeHtml(before);
+      if (projectId) window.Store.updateNode(projectId, id, { text: before }).catch(handleError);
+    } });
+    saveSelection();
+    updateTextToolbar();
+  }
+
+  // Если внутри блока нет активного выделения — берём весь блок целиком,
+  // чтобы форматирование применялось ко всему тексту.
+  function ensureSelectionIn(el) {
+    const sel = window.getSelection();
+    if (!sel) return;
+    const ok = sel.rangeCount && !sel.isCollapsed &&
+      el.contains(sel.anchorNode) && el.contains(sel.focusNode);
+    if (ok) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(range);
   }
 
   function selectOnly(id) {
@@ -446,7 +755,12 @@ window.Board = (function () {
   // --- Буфер обмена ---
 
   function snapshot(node) {
-    return { id: node.id, type: node.type, x: node.x, y: node.y, text: node.text || '', createdBy: node.createdBy };
+    return {
+      id: node.id, type: node.type, x: node.x, y: node.y,
+      text: node.text || '', createdBy: node.createdBy,
+      fontFamily: node.fontFamily, fontSize: node.fontSize,
+      color: node.color, align: node.align
+    };
   }
 
   function copySelected() {
@@ -740,6 +1054,7 @@ window.Board = (function () {
   }
 
   function onMouseDown(e) {
+    if (e.target.closest('.text-toolbar')) return;   // клики по панели форматирования
     if (e.button === 1) { startPan(e); return; }   // СКМ — перемещение доски
     if (e.button === 2) return;                     // ПКМ — ничего (меню отключено)
     if (e.button !== 0) return;
@@ -868,6 +1183,7 @@ window.Board = (function () {
         it.el.style.top = it.node.y + 'px';
       });
       updateSelectionBox();
+      updateTextToolbar();
       queueLiveMove(dragGroup.items.map(it => it.node));
     }
   }
