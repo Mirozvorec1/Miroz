@@ -1,28 +1,37 @@
-// Доска: холст, зум, панорамирование и создание элементов.
-// Это базовая оболочка — наполнение (стикеры, фигуры, связи) будем расширять.
+// Доска: холст, зум, панорамирование, элементы + realtime-синхронизация.
+//
+// Изменения других пользователей прилетают через Store.subscribeNodes и
+// применяются к DOM на лету. Локальное перетаскивание/правка элемента не
+// перебивается входящими апдейтами (пока элемент тащат или редактируют).
 
 window.Board = (function () {
   let viewport, world;
-  let board = null;
-  let onSave = null;
+  let projectId = null;
+  let unsubscribe = null;
+
+  const nodes = new Map();      // id -> данные узла
+  const nodeEls = new Map();    // id -> DOM-элемент
+  const draggingIds = new Set(); // узлы, которые сейчас тащим локально
+  const textTimers = new Map();  // id -> таймер отложенной записи текста
+
   const MIN_SCALE = 0.2;
   const MAX_SCALE = 4;
-
   const view = { x: 0, y: 0, scale: 1 };
+
   let activeTool = 'select';
   let spaceDown = false;
   let panning = false;
   let panStart = null;
   let dragNode = null;
-  let saveTimer = null;
+  let viewTimer = null;
 
-  function init(opts) {
+  function init() {
     viewport = document.getElementById('canvas-viewport');
     world = document.getElementById('canvas-world');
-    onSave = opts && opts.onSave;
-
     bindEvents();
   }
+
+  // --- Вид ---
 
   function applyView() {
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
@@ -30,6 +39,14 @@ window.Board = (function () {
     if (grid) grid.style.backgroundSize = `${24 * view.scale}px ${24 * view.scale}px`;
     const zv = document.getElementById('zoom-value');
     if (zv) zv.textContent = Math.round(view.scale * 100) + '%';
+  }
+
+  function scheduleViewSave() {
+    if (!projectId) return;
+    clearTimeout(viewTimer);
+    viewTimer = setTimeout(() => {
+      window.Store.saveView(projectId, { x: view.x, y: view.y, scale: view.scale });
+    }, 400);
   }
 
   function screenToWorld(clientX, clientY) {
@@ -40,34 +57,71 @@ window.Board = (function () {
     };
   }
 
-  // --- Загрузка / сохранение ---
+  // --- Загрузка / выгрузка ---
 
-  async function load(projectId) {
-    board = await window.Store.getBoard(projectId);
-    if (board.view) {
-      view.x = board.view.x || 0;
-      view.y = board.view.y || 0;
-      view.scale = board.view.scale || 1;
-    }
-    render();
-    applyView();
-  }
-
-  function scheduleSave() {
-    if (!board) return;
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      board.view = { x: view.x, y: view.y, scale: view.scale };
-      if (onSave) onSave(board);
-    }, 400);
-  }
-
-  // --- Отрисовка ---
-
-  function render() {
-    if (!board) return;
+  async function load(pid) {
+    unload();
+    projectId = pid;
+    nodes.clear();
+    nodeEls.clear();
     world.querySelectorAll('.canvas-node').forEach(n => n.remove());
-    board.nodes.forEach(renderNode);
+
+    const v = await window.Store.getView(pid);
+    view.x = v.x || 0;
+    view.y = v.y || 0;
+    view.scale = v.scale || 1;
+
+    const list = await window.Store.getNodes(pid);
+    list.forEach(renderOrAdd);
+    applyView();
+    renderPresence();
+
+    unsubscribe = window.Store.subscribeNodes(pid, {
+      onAdd: renderOrAdd,
+      onModify: applyRemoteNode,
+      onRemove: removeNodeById
+    });
+  }
+
+  function unload() {
+    if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    projectId = null;
+  }
+
+  // --- Применение данных ---
+
+  function renderOrAdd(node) {
+    if (nodes.has(node.id)) return;
+    nodes.set(node.id, node);
+    renderNode(node);
+  }
+
+  function applyRemoteNode(node) {
+    const local = nodes.get(node.id);
+    const el = nodeEls.get(node.id);
+    if (!local || !el) { renderOrAdd(node); return; }
+
+    const editing = document.activeElement === el;
+    const dragging = draggingIds.has(node.id);
+
+    local.type = node.type;
+    if (!dragging) {
+      local.x = node.x;
+      local.y = node.y;
+      el.style.left = node.x + 'px';
+      el.style.top = node.y + 'px';
+    }
+    if (!editing) {
+      local.text = node.text;
+      el.textContent = node.text;
+    }
+  }
+
+  function removeNodeById(id) {
+    const el = nodeEls.get(id);
+    if (el) el.remove();
+    nodeEls.delete(id);
+    nodes.delete(id);
   }
 
   function renderNode(node) {
@@ -80,28 +134,70 @@ window.Board = (function () {
 
     if (node.type === 'sticky' || node.type === 'text') {
       el.contentEditable = 'true';
-      el.addEventListener('input', () => { node.text = el.textContent; scheduleSave(); });
+      el.addEventListener('input', () => {
+        node.text = el.textContent;
+        scheduleTextSave(node.id);
+      });
     }
+    nodeEls.set(node.id, el);
     world.appendChild(el);
+  }
+
+  function scheduleTextSave(id) {
+    if (!projectId) return;
+    clearTimeout(textTimers.get(id));
+    textTimers.set(id, setTimeout(() => {
+      const n = nodes.get(id);
+      if (n) window.Store.updateNode(projectId, id, { text: n.text });
+    }, 500));
   }
 
   // --- Создание элементов ---
 
   function addNode(type, x, y) {
+    const user = window.currentUser;
     const node = {
       id: window.Store.uid(),
       type,
       x: Math.round(x),
       y: Math.round(y),
-      text: type === 'frame' ? '' : (type === 'text' ? 'Текст' : 'Стикер')
+      text: type === 'frame' ? '' : (type === 'text' ? 'Текст' : 'Стикер'),
+      createdBy: user ? user.uid : 'anon'
     };
-    board.nodes.push(node);
+    nodes.set(node.id, node);
     renderNode(node);
-    scheduleSave();
+    window.Store.addNode(projectId, node).catch(err => console.error(err));
+
     if (type !== 'frame') {
-      const el = world.querySelector(`.canvas-node[data-id="${node.id}"]`);
-      if (el) { el.focus(); document.execCommand && document.getSelection().selectAllChildren(el); }
+      const el = nodeEls.get(node.id);
+      if (el) {
+        el.focus();
+        const sel = document.getSelection();
+        if (sel) sel.selectAllChildren(el);
+      }
     }
+  }
+
+  // --- Присутствие (пока показываем только себя) ---
+
+  function renderPresence() {
+    const pres = document.getElementById('presence');
+    if (!pres) return;
+    pres.innerHTML = '';
+    const user = window.currentUser;
+    if (!user || !user.displayName) return;
+    const av = document.createElement('div');
+    av.className = 'presence__avatar';
+    av.style.background = stringToColor(user.uid || user.displayName);
+    av.textContent = (user.displayName || '?').slice(0, 1).toUpperCase();
+    av.title = 'Вы: ' + user.displayName;
+    pres.appendChild(av);
+  }
+
+  function stringToColor(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
+    return `hsl(${h}, 65%, 45%)`;
   }
 
   // --- События ---
@@ -109,6 +205,7 @@ window.Board = (function () {
   function bindEvents() {
     viewport.addEventListener('wheel', onWheel, { passive: false });
     viewport.addEventListener('mousedown', onMouseDown);
+    viewport.addEventListener('dblclick', onDblClick);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('keydown', onKeyDown);
@@ -117,7 +214,6 @@ window.Board = (function () {
     document.querySelectorAll('.tool').forEach(btn => {
       btn.addEventListener('click', () => setTool(btn.dataset.tool));
     });
-
     document.getElementById('zoom-in').addEventListener('click', () => zoomAt(0.2));
     document.getElementById('zoom-out').addEventListener('click', () => zoomAt(-0.2));
     document.getElementById('zoom-reset').addEventListener('click', resetView);
@@ -138,7 +234,7 @@ window.Board = (function () {
       view.x -= e.deltaX;
       view.y -= e.deltaY;
       applyView();
-      scheduleSave();
+      scheduleViewSave();
     }
   }
 
@@ -154,19 +250,20 @@ window.Board = (function () {
     view.x = cx - worldX * view.scale;
     view.y = cy - worldY * view.scale;
     applyView();
-    scheduleSave();
+    scheduleViewSave();
   }
 
   function resetView() {
     view.x = 0; view.y = 0; view.scale = 1;
     applyView();
-    scheduleSave();
+    scheduleViewSave();
   }
 
   function onMouseDown(e) {
     if (e.button === 1 || spaceDown) { startPan(e); return; }
+    if (e.button !== 0) return;
 
-    if (e.button === 0 && activeTool !== 'select') {
+    if (activeTool !== 'select') {
       const p = screenToWorld(e.clientX, e.clientY);
       addNode(activeTool, p.x, p.y);
       setTool('select');
@@ -174,13 +271,22 @@ window.Board = (function () {
     }
 
     const nodeEl = e.target.closest('.canvas-node');
-    if (nodeEl && activeTool === 'select' && !e.target.isContentEditable) {
-      const node = board.nodes.find(n => n.id === nodeEl.dataset.id);
+    if (nodeEl) {
+      if (document.activeElement === nodeEl) return; // идёт редактирование
+      e.preventDefault();
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      const node = nodes.get(nodeEl.dataset.id);
+      if (!node) return;
+      draggingIds.add(node.id);
       dragNode = { node, el: nodeEl, startX: e.clientX, startY: e.clientY, ox: node.x, oy: node.y };
       return;
     }
+    startPan(e);
+  }
 
-    if (!nodeEl) startPan(e);
+  function onDblClick(e) {
+    const el = e.target.closest('.canvas-node');
+    if (el && el.isContentEditable) el.focus();
   }
 
   function startPan(e) {
@@ -204,12 +310,17 @@ window.Board = (function () {
   }
 
   function onMouseUp() {
-    if (panning) { panning = false; scheduleSave(); }
+    if (panning) { panning = false; scheduleViewSave(); }
     if (dragNode) {
-      dragNode.node.x = Math.round(dragNode.node.x);
-      dragNode.node.y = Math.round(dragNode.node.y);
+      const { node, el } = dragNode;
+      node.x = Math.round(node.x);
+      node.y = Math.round(node.y);
+      el.style.left = node.x + 'px';
+      el.style.top = node.y + 'px';
+      draggingIds.delete(node.id);
+      window.Store.updateNode(projectId, node.id, { x: node.x, y: node.y })
+        .catch(err => console.error(err));
       dragNode = null;
-      scheduleSave();
     }
   }
 
@@ -238,5 +349,5 @@ window.Board = (function () {
     return a && (a.isContentEditable || a.tagName === 'INPUT');
   }
 
-  return { init, load, applyView, resetView };
+  return { init, load, unload, applyView, resetView };
 })();

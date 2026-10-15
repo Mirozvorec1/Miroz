@@ -1,6 +1,10 @@
-// Подключение Firebase: Auth (Google) + Firestore.
-// Работает поверх compat-SDK (firebase-app/auth/firestore-compat.js),
-// подключённого в index.html до этого файла.
+// Подключение Firebase: Auth (Google) + Firestore с realtime-синхронизацией.
+// Работает поверх compat-SDK, подключённого в index.html до этого файла.
+//
+// Модель данных:
+//   projects/{pid}                 → name, ownerName, members, createdAt, updatedAt
+//   projects/{pid}/nodes/{nodeId}  → type, x, y, text, createdBy, updatedAt
+//   вид доски (pan/zoom) хранится локально у каждого пользователя.
 //
 // Если Firebase выключен в config.js или SDK не загрузился —
 // остаётся локальный режим (window.Store из storage.js).
@@ -10,7 +14,6 @@
 
   window.currentUser = null;
 
-  // Заглушка Auth для локального режима.
   const LocalAuth = {
     signInWithGoogle: async () => {},
     signOut: async () => {},
@@ -32,14 +35,26 @@
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
 
-  // ---------- FirestoreStore: тот же интерфейс, что у локального Store ----------
+  function projectsCol() { return db.collection('projects'); }
+  function nodesCol(pid) { return projectsCol().doc(pid).collection('nodes'); }
+  function viewKey(pid) { return 'miroz.view.' + pid; }
+
+  // ---------- FirestoreStore ----------
   const FirestoreStore = {
     uid,
 
+    // --- Проекты ---
+
     async listProjects() {
-      const snap = await db.collection('projects')
-        .orderBy('updatedAt', 'desc').get();
+      const snap = await projectsCol().orderBy('updatedAt', 'desc').get();
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    },
+
+    // Realtime-список проектов. Возвращает функцию отписки.
+    subscribeProjects(onChange) {
+      return projectsCol().orderBy('updatedAt', 'desc').onSnapshot(snap => {
+        onChange(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      }, err => console.error('[projects] snapshot error:', err));
     },
 
     async createProject(name) {
@@ -55,32 +70,77 @@
         createdAt: now,
         updatedAt: now
       };
-      await db.collection('projects').doc(id).set(project);
+      await projectsCol().doc(id).set(project);
       return project;
     },
 
     async renameProject(id, name) {
-      await db.collection('projects').doc(id).update({ name, updatedAt: Date.now() });
+      await projectsCol().doc(id).update({ name, updatedAt: Date.now() });
       return { id, name };
     },
 
     async deleteProject(id) {
-      await db.collection('projects').doc(id).collection('board').doc('main').delete().catch(() => {});
-      await db.collection('projects').doc(id).delete();
+      const snap = await nodesCol(id).get();
+      const batch = db.batch();
+      snap.docs.forEach(d => batch.delete(d.ref));
+      batch.delete(projectsCol().doc(id));
+      await batch.commit();
+      localStorage.removeItem(viewKey(id));
     },
 
-    async getBoard(projectId) {
-      const ref = db.collection('projects').doc(projectId).collection('board').doc('main');
-      const doc = await ref.get();
-      if (doc.exists) return doc.data();
-      return { projectId, nodes: [], view: { x: 0, y: 0, scale: 1 } };
+    // --- Узлы доски ---
+
+    async getNodes(projectId) {
+      const snap = await nodesCol(projectId).get();
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
     },
 
-    async saveBoard(projectId, board) {
-      const projectRef = db.collection('projects').doc(projectId);
-      const boardRef = projectRef.collection('board').doc('main');
-      await boardRef.set({ nodes: board.nodes || [], view: board.view || { x: 0, y: 0, scale: 1 } });
-      await projectRef.update({ updatedAt: Date.now() });
+    async addNode(projectId, node) {
+      const user = window.currentUser;
+      const data = {
+        type: node.type,
+        x: node.x,
+        y: node.y,
+        text: node.text || '',
+        createdBy: user ? user.uid : 'anon',
+        updatedAt: Date.now()
+      };
+      await nodesCol(projectId).doc(node.id).set(data);
+      await projectsCol().doc(projectId).update({ updatedAt: Date.now() }).catch(() => {});
+    },
+
+    async updateNode(projectId, nodeId, patch) {
+      await nodesCol(projectId).doc(nodeId).update({ ...patch, updatedAt: Date.now() });
+    },
+
+    async removeNode(projectId, nodeId) {
+      await nodesCol(projectId).doc(nodeId).delete();
+    },
+
+    // Realtime-подписка на узлы. handlers: { onAdd, onModify, onRemove }.
+    subscribeNodes(projectId, handlers) {
+      return nodesCol(projectId).onSnapshot(snap => {
+        snap.docChanges().forEach(ch => {
+          if (ch.type === 'removed') {
+            handlers.onRemove(ch.doc.id);
+          } else {
+            const node = { id: ch.doc.id, ...ch.doc.data() };
+            if (ch.type === 'added') handlers.onAdd(node);
+            else handlers.onModify(node);
+          }
+        });
+      }, err => console.error('[nodes] snapshot error:', err));
+    },
+
+    // --- Вид доски (локально у каждого пользователя) ---
+
+    async getView(projectId) {
+      try { return JSON.parse(localStorage.getItem(viewKey(projectId))) || { x: 0, y: 0, scale: 1 }; }
+      catch (e) { return { x: 0, y: 0, scale: 1 }; }
+    },
+
+    async saveView(projectId, view) {
+      localStorage.setItem(viewKey(projectId), JSON.stringify(view));
     }
   };
 
@@ -90,14 +150,9 @@
       const provider = new firebase.auth.GoogleAuthProvider();
       await auth.signInWithPopup(provider);
     },
-    async signOut() {
-      await auth.signOut();
-    },
+    async signOut() { await auth.signOut(); },
     onChange(cb) {
-      auth.onAuthStateChanged(user => {
-        window.currentUser = user;
-        cb(user);
-      });
+      auth.onAuthStateChanged(user => { window.currentUser = user; cb(user); });
     }
   };
 

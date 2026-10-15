@@ -1,29 +1,23 @@
-// Слой данных.
+// Слой данных (локальный режим, localStorage).
 //
-// Сейчас — localStorage. Интерфейс специально сделан асинхронным,
-// чтобы позже безболезненно подменить реализацию на Firebase.
+// Интерфейс асинхронный и совпадает с FirestoreStore из js/firebase.js,
+// поэтому при включённом Firebase window.Store переключается без правок UI.
 //
-// Пример подключения Firebase (когда дойдём до этого):
-//   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.x/firebase-app.js';
-//   import { getFirestore, collection, getDocs, addDoc, doc, setDoc } from '.../firebase-firestore.js';
-//   Затем переопределить методы Store (или создать FirestoreStore
-//   с теми же методами и подставить его в window.Store).
+// Каждый элемент доски — отдельная запись (узел), как и в Firestore:
+// это позволяет синхронизировать изменения по одному элементу.
 
 window.__LocalStore = (function () {
   const KEY_PROJECTS = 'miroz.projects';
-  const KEY_BOARD_PREFIX = 'miroz.board.';
+  const KEY_NODES = 'miroz.nodes.';
+  const KEY_VIEW = 'miroz.view.';
 
-  function readProjects() {
-    try {
-      return JSON.parse(localStorage.getItem(KEY_PROJECTS)) || [];
-    } catch (e) {
-      return [];
-    }
-  }
+  const DEFAULT_VIEW = () => ({ x: 0, y: 0, scale: 1 });
 
-  function writeProjects(projects) {
-    localStorage.setItem(KEY_PROJECTS, JSON.stringify(projects));
+  function read(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key)) ?? fallback; }
+    catch (e) { return fallback; }
   }
+  function write(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
 
   function uid() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -32,7 +26,13 @@ window.__LocalStore = (function () {
   // --- Проекты ---
 
   async function listProjects() {
-    return readProjects().sort((a, b) => b.updatedAt - a.updatedAt);
+    return read(KEY_PROJECTS, []).sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  function touchProject(id) {
+    const projects = read(KEY_PROJECTS, []);
+    const p = projects.find(x => x.id === id);
+    if (p) { p.updatedAt = Date.now(); write(KEY_PROJECTS, projects); }
   }
 
   async function createProject(name) {
@@ -40,49 +40,66 @@ window.__LocalStore = (function () {
     const project = {
       id: uid(),
       name: (name || 'Без названия').trim() || 'Без названия',
+      ownerId: window.APP_CONFIG.localUser.id,
+      ownerName: window.APP_CONFIG.localUser.name,
+      members: [],
       createdAt: now,
-      updatedAt: now,
-      ownerId: window.APP_CONFIG.localUser.id
+      updatedAt: now
     };
-    const projects = readProjects();
+    const projects = read(KEY_PROJECTS, []);
     projects.push(project);
-    writeProjects(projects);
+    write(KEY_PROJECTS, projects);
     return project;
   }
 
   async function renameProject(id, name) {
-    const projects = readProjects();
+    const projects = read(KEY_PROJECTS, []);
     const p = projects.find(x => x.id === id);
-    if (!p) return null;
-    p.name = name;
-    p.updatedAt = Date.now();
-    writeProjects(projects);
+    if (p) { p.name = name; p.updatedAt = Date.now(); write(KEY_PROJECTS, projects); }
     return p;
   }
 
   async function deleteProject(id) {
-    writeProjects(readProjects().filter(x => x.id !== id));
-    localStorage.removeItem(KEY_BOARD_PREFIX + id);
+    write(KEY_PROJECTS, read(KEY_PROJECTS, []).filter(x => x.id !== id));
+    localStorage.removeItem(KEY_NODES + id);
+    localStorage.removeItem(KEY_VIEW + id);
   }
 
-  // --- Доска проекта ---
+  // --- Узлы доски ---
 
-  async function getBoard(projectId) {
-    try {
-      const raw = localStorage.getItem(KEY_BOARD_PREFIX + projectId);
-      if (raw) return JSON.parse(raw);
-    } catch (e) { /* ignore */ }
-    return { projectId, nodes: [], view: { x: 0, y: 0, scale: 1 } };
+  async function getNodes(projectId) {
+    return read(KEY_NODES + projectId, []);
   }
 
-  async function saveBoard(projectId, board) {
-    localStorage.setItem(KEY_BOARD_PREFIX + projectId, JSON.stringify(board));
-    const projects = readProjects();
-    const p = projects.find(x => x.id === projectId);
-    if (p) {
-      p.updatedAt = Date.now();
-      writeProjects(projects);
-    }
+  async function addNode(projectId, node) {
+    const nodes = read(KEY_NODES + projectId, []);
+    nodes.push(node);
+    write(KEY_NODES + projectId, nodes);
+    touchProject(projectId);
+  }
+
+  async function updateNode(projectId, nodeId, patch) {
+    const nodes = read(KEY_NODES + projectId, []);
+    const n = nodes.find(x => x.id === nodeId);
+    if (n) { Object.assign(n, patch); write(KEY_NODES + projectId, nodes); touchProject(projectId); }
+  }
+
+  async function removeNode(projectId, nodeId) {
+    write(KEY_NODES + projectId, read(KEY_NODES + projectId, []).filter(x => x.id !== nodeId));
+    touchProject(projectId);
+  }
+
+  // Локально realtime нет — подписка ничего не делает.
+  function subscribeNodes() { return function unsubscribe() {}; }
+
+  // --- Вид доски (персональный для каждого пользователя) ---
+
+  async function getView(projectId) {
+    return read(KEY_VIEW + projectId, DEFAULT_VIEW());
+  }
+
+  async function saveView(projectId, view) {
+    write(KEY_VIEW + projectId, view);
   }
 
   return {
@@ -90,12 +107,17 @@ window.__LocalStore = (function () {
     createProject,
     renameProject,
     deleteProject,
-    getBoard,
-    saveBoard,
+    getNodes,
+    addNode,
+    updateNode,
+    removeNode,
+    subscribeNodes,
+    getView,
+    saveView,
     uid
   };
 })();
 
-// Локальный режим по умолчанию. Если Firebase включён,
-// js/firebase.js перезапишет window.Store на FirestoreStore.
+// Локальный режим по умолчанию. js/firebase.js перезапишет window.Store,
+// если Firebase включён в config.js.
 window.Store = window.__LocalStore;

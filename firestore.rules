@@ -5,7 +5,10 @@ rules_version = '2';
 //
 // Доступ: любой залогиненный пользователь может читать и писать
 // (проекты общие для всех вошедших — удобно для работы с друзьями).
-// Позже можно ужесточить: только участники проекта (поле members).
+//
+// Структура:
+//   projects/{projectId}
+//   projects/{projectId}/nodes/{nodeId}
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -13,7 +16,7 @@ service cloud.firestore {
     match /projects/{projectId} {
       allow read, write: if request.auth != null;
 
-      match /board/{docId} {
+      match /nodes/{nodeId} {
         allow read, write: if request.auth != null;
       }
     }

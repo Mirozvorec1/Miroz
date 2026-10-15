@@ -11,6 +11,7 @@
   const loginError = document.getElementById('login-error');
 
   let currentProject = null;
+  let unsubProjects = null;
 
   // --- Роутер ---
 
@@ -24,28 +25,43 @@
     currentProject = project;
     boardTitle.value = project.name;
     document.title = project.name + ' — Miroz';
-    await window.Board.load(project.id);
     showScreen('board');
+    await window.Board.load(project.id);
   }
 
   async function goToProjects() {
+    window.Board.unload();
     currentProject = null;
     document.title = 'Miroz';
     showScreen('projects');
-    await renderProjects();
   }
 
   // --- Список проектов ---
 
+  function startProjects() {
+    stopProjects();
+    if (window.Store.subscribeProjects) {
+      unsubProjects = window.Store.subscribeProjects(renderProjectList);
+    } else {
+      renderProjects();
+    }
+  }
+
+  function stopProjects() {
+    if (unsubProjects) { unsubProjects(); unsubProjects = null; }
+  }
+
   async function renderProjects() {
-    let projects = [];
     try {
-      projects = await window.Store.listProjects();
+      renderProjectList(await window.Store.listProjects());
     } catch (err) {
       console.error('Не удалось загрузить проекты:', err);
       alert('Ошибка загрузки проектов: ' + err.message +
-        '\n\nПроверьте правила Firestore (см. комментарий в js/firebase.js).');
+        '\n\nПроверьте правила Firestore (Firestore → Rules).');
     }
+  }
+
+  function renderProjectList(projects) {
     grid.innerHTML = '';
 
     const hasItems = projects.length > 0;
@@ -70,7 +86,7 @@
         e.stopPropagation();
         if (confirm(`Удалить проект «${p.name}»?`)) {
           await window.Store.deleteProject(p.id);
-          renderProjects();
+          if (!unsubProjects) renderProjects();
         }
       });
 
@@ -96,11 +112,7 @@
   // --- Инициализация ---
 
   function init() {
-    window.Board.init({
-      onSave: async (board) => {
-        if (currentProject) await window.Store.saveBoard(currentProject.id, board);
-      }
-    });
+    window.Board.init();
 
     document.getElementById('btn-create-project').addEventListener('click', createProjectFlow);
     document.getElementById('btn-back').addEventListener('click', goToProjects);
@@ -131,8 +143,11 @@
         userBadge.textContent = user.displayName || user.email || 'Пользователь';
         userBadge.title = user.email || '';
         document.getElementById('btn-logout').classList.remove('hidden');
-        goToProjects();
+        showScreen('projects');
+        startProjects();
       } else {
+        stopProjects();
+        window.Board.unload();
         userBadge.textContent = 'Гость';
         userBadge.title = 'Не авторизован';
         document.getElementById('btn-logout').classList.add('hidden');
