@@ -12,6 +12,9 @@ window.Board = (function () {
   let toolbarNodeId = null;
   let toolbarMenu = null; // открытое подменю панели
   let savedRange = null;  // сохранённое выделение внутри текста
+  let pickerEls = null;   // узлы hex-пикера цвета
+  let pickerHsv = { h: 0, s: 0, v: 0.9 };
+  let pickerDragging = false;
   let projectId = null;
   let unsubscribe = null;
 
@@ -22,12 +25,14 @@ window.Board = (function () {
     { label: 'Scribbled', value: '"Comic Sans MS", "Segoe UI", cursive' }
   ];
   const FONT_SIZES = [
-    { label: 'Small', value: 14 },
-    { label: 'Medium', value: 20 },
-    { label: 'Large', value: 28 },
-    { label: 'Extra large', value: 40 },
-    { label: 'Huge', value: 56 }
+    { label: 'Small', value: 12 },
+    { label: 'Medium', value: 16 },
+    { label: 'Large', value: 24 },
+    { label: 'Extra large', value: 32 },
+    { label: 'Huge', value: 48 }
   ];
+  const DEFAULT_FONT_SIZE = 16; // базовый кегль текста (см. макет)
+  const RESIZE_STEP = 10;       // шаг изменения размера за уголки
   const TEXT_COLORS = [
     '#1a1a1a', '#4b5563', '#e5484d', '#f76808', '#f5c400', '#30a46c',
     '#00b8d9', '#0091ff', '#8e4ec6', '#e93d82', '#ffffff', '#d1d5db'
@@ -35,6 +40,12 @@ window.Board = (function () {
   const TEXT_COLORS_LIGHT = [
     '#f3f4f6', '#fca5a5', '#fdba74', '#fde68a', '#a7f3d0', '#99f6e4',
     '#bae6fd', '#c4b5fd', '#fbcfe8', '#f9a8d4', '#e5e7eb', '#ffe4e6'
+  ];
+  const ALIGN_ITEMS = [
+    { value: 'left', label: 'По левому краю' },
+    { value: 'center', label: 'По центру' },
+    { value: 'right', label: 'По правому краю' },
+    { value: 'justify', label: 'По ширине' }
   ];
 
   const nodes = new Map();      // id -> данные узла
@@ -70,6 +81,7 @@ window.Board = (function () {
   let panning = false;
   let panStart = null;
   let dragGroup = null;   // { startX, startY, items:[{node, el, ox, oy}] }
+  let clickCandidate = null; // { id, wasSelected, moved } — отличаем клик от перетаскивания
   let resizing = null;    // { id, corner, startX, startY, ox, oy, ow, oh }
   let marquee = null;     // { start, rect, el, base }
   let lastRmb = { id: null, t: 0 };
@@ -110,13 +122,15 @@ window.Board = (function () {
       '<div class="sel-handle" data-corner="nw"></div>' +
       '<div class="sel-handle" data-corner="ne"></div>' +
       '<div class="sel-handle" data-corner="sw"></div>' +
-      '<div class="sel-handle" data-corner="se"></div>';
+      '<div class="sel-handle" data-corner="se"></div>' +
+      '<div class="sel-handle sel-handle--side" data-corner="e"></div>' +
+      '<div class="sel-handle sel-handle--side" data-corner="w"></div>';
     viewport.appendChild(selBox);
 
     buildTextToolbar();
 
     const hint = document.getElementById('canvas-hint');
-    if (hint) hint.textContent = 'ЛКМ — выделение и рамка, СКМ — перемещение доски';
+    if (hint) hint.textContent = 'ЛКМ — выделение и рамка, повторный клик — правка, СКМ — перемещение доски';
 
     // Сохраняем выделение внутри редактируемого текста, чтобы панель
     // форматирования не «теряла» его при кликах по кнопкам.
@@ -243,8 +257,11 @@ window.Board = (function () {
       el.style.left = node.x + 'px';
       el.style.top = node.y + 'px';
     }
-    if (node.w !== undefined) { local.w = node.w; el.style.width = node.w == null ? '' : node.w + 'px'; }
-    if (node.h !== undefined) { local.h = node.h; el.style.height = node.h == null ? '' : node.h + 'px'; }
+    if (node.w !== undefined || node.h !== undefined) {
+      if (node.w !== undefined) local.w = node.w;
+      if (node.h !== undefined) local.h = node.h;
+      applyNodeBox(el, local);
+    }
     ['fontFamily', 'fontSize', 'color', 'align'].forEach(k => {
       if (node[k] !== undefined) local[k] = node[k];
     });
@@ -269,8 +286,7 @@ window.Board = (function () {
     el.dataset.id = node.id;
     el.style.left = node.x + 'px';
     el.style.top = node.y + 'px';
-    if (node.w != null) el.style.width = node.w + 'px';
-    if (node.h != null) el.style.height = node.h + 'px';
+    applyNodeBox(el, node);
     el.innerHTML = sanitizeHtml(node.text || '');
     applyNodeTextStyle(el, node);
     if (selectedIds.has(node.id)) el.classList.add('is-selected');
@@ -280,6 +296,8 @@ window.Board = (function () {
       el.addEventListener('input', () => {
         node.text = el.innerHTML;
         scheduleTextSave(node.id);
+        updateSelectionBox();     // элемент растёт вниз — тянем рамку и панель
+        updateTextToolbar();
       });
       // История правки текста: фиксируем значение до и после редактирования.
       el.addEventListener('focus', () => { el._textBefore = node.text || ''; });
@@ -307,6 +325,20 @@ window.Board = (function () {
     el.style.fontSize = node.fontSize ? node.fontSize + 'px' : '';
     el.style.color = node.color || '';
     el.style.textAlign = node.align || '';
+  }
+
+  // Габариты элемента. У текста и стикера высота — минимальная: при вводе
+  // текста элемент растёт вниз сам. У рамки фиксированные ширина и высота.
+  function applyNodeBox(el, node) {
+    el.style.width = node.w != null ? node.w + 'px' : '';
+    const grows = node.type === 'text' || node.type === 'sticky';
+    if (grows) {
+      el.style.minHeight = node.h != null ? node.h + 'px' : '';
+      el.style.height = '';
+    } else {
+      el.style.minHeight = '';
+      el.style.height = node.h != null ? node.h + 'px' : '';
+    }
   }
 
   // Защита от вставки чужого HTML: убираем скрипты и опасные обработчики.
@@ -468,35 +500,25 @@ window.Board = (function () {
     sizeInput.addEventListener('change', () => { pushStyleHistory(toolbarNodeId, sizeInput._before); });
     sizeMenu.appendChild(sizeInput);
 
-    // Меню цвета: палитра + свой цвет («радуга»).
+    // Меню цвета: hex-пикер (пипетка, HEX-поле, полоса тона, квадрат SV) + палитра.
     const colorMenu = mkMenu('color');
-    colorMenu.classList.add('tt-colors');
+    colorMenu.classList.add('tt-picker');
+    colorMenu.appendChild(buildColorPicker());
+    const swatches = document.createElement('div');
+    swatches.className = 'tt-swatches';
     TEXT_COLORS.concat(TEXT_COLORS_LIGHT).forEach(c => {
       const b = document.createElement('button');
-      b.className = 'tt-menu__item tt-color-item';
+      b.className = 'tt-swatch-btn';
       b.dataset.value = c;
+      b.title = c;
       b.innerHTML = '<span class="tt-swatch" style="background:' + c + '"></span>';
-      colorMenu.appendChild(b);
+      swatches.appendChild(b);
     });
-    const customBtn = document.createElement('button');
-    customBtn.className = 'tt-menu__item tt-color-item';
-    customBtn.dataset.value = '__custom__';
-    customBtn.innerHTML = '<span class="tt-swatch tt-swatch--rainbow"></span>';
-    colorMenu.appendChild(customBtn);
-    const colorInput = document.createElement('input');
-    colorInput.type = 'color';
-    colorInput.className = 'tt-color-input';
-    colorInput.addEventListener('focus', () => { colorInput._before = captureStyle(toolbarNodeId); });
-    colorInput.addEventListener('input', () => {
-      if (toolbarNodeId) setNodeStyle(toolbarNodeId, { color: colorInput.value }, true);
-    });
-    colorInput.addEventListener('change', () => { pushStyleHistory(toolbarNodeId, colorInput._before); });
-    colorMenu.appendChild(colorInput);
+    colorMenu.appendChild(swatches);
 
-    // Меню выравнивания.
+    // Меню выравнивания (пункты с иконками).
     const alignMenu = mkMenu('align');
-    [['left', '⯇  По левому краю'], ['center', '≡  По центру'], ['right', '⯈  По правому краю']]
-      .forEach(a => alignMenu.appendChild(mkMenuItem(a[1], a[0])));
+    ALIGN_ITEMS.forEach(a => alignMenu.appendChild(mkAlignItem(a)));
 
     [fontMenu, sizeMenu, colorMenu, alignMenu].forEach(m => textToolbar.appendChild(m));
 
@@ -552,12 +574,238 @@ window.Board = (function () {
       b.classList.toggle('is-active', b.dataset.value === String(value)));
   }
 
+  // --- Иконки выравнивания ---
+
+  function alignSvg(kind) {
+    const W = 18, full = 14, short = 9, x0 = 2;
+    const widths = [full, short, full, short];
+    let bars = '';
+    [3, 7, 11, 15].forEach((y, i) => {
+      const w = kind === 'justify' ? full : widths[i];
+      let x = x0;
+      if (kind === 'center') x = (W - w) / 2;
+      else if (kind === 'right') x = W - x0 - w;
+      bars += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="2" rx="1"/>';
+    });
+    return '<svg class="tt-align-ico" viewBox="0 0 18 18" fill="currentColor">' + bars + '</svg>';
+  }
+
+  function mkAlignItem(item) {
+    const b = document.createElement('button');
+    b.className = 'tt-menu__item';
+    b.dataset.value = item.value;
+    b.innerHTML = '<span class="tt-check">✓</span>' + alignSvg(item.value) +
+      '<span class="tt-menu__label"></span>';
+    b.querySelector('.tt-menu__label').textContent = item.label;
+    return b;
+  }
+
+  // --- Hex-пикер цвета ---
+
+  function clamp01(x) { return Math.min(1, Math.max(0, x)); }
+
+  function normalizeHex(str) {
+    if (!str) return null;
+    let s = String(str).trim().replace(/^#/, '');
+    if (/^[0-9a-fA-F]{3}$/.test(s)) s = s.split('').map(c => c + c).join('');
+    if (!/^[0-9a-fA-F]{6}$/.test(s)) return null;
+    return '#' + s.toLowerCase();
+  }
+
+  function hsvToHex(h, s, v) {
+    s = clamp01(s); v = clamp01(v);
+    const c = v * s;
+    const hp = (((h % 360) + 360) % 360) / 60;
+    const x = c * (1 - Math.abs((hp % 2) - 1));
+    let r = 0, g = 0, b = 0;
+    if (hp < 1) { r = c; g = x; }
+    else if (hp < 2) { r = x; g = c; }
+    else if (hp < 3) { g = c; b = x; }
+    else if (hp < 4) { g = x; b = c; }
+    else if (hp < 5) { r = x; b = c; }
+    else { r = c; b = x; }
+    const m = v - c;
+    const to = n => Math.round((n + m) * 255).toString(16).padStart(2, '0');
+    return '#' + to(r) + to(g) + to(b);
+  }
+
+  function hexToHsv(hex) {
+    const n = normalizeHex(hex) || '#000000';
+    const r = parseInt(n.slice(1, 3), 16) / 255;
+    const g = parseInt(n.slice(3, 5), 16) / 255;
+    const b = parseInt(n.slice(5, 7), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    let h = 0;
+    if (d) {
+      if (max === r) h = ((g - b) / d) % 6;
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h *= 60;
+      if (h < 0) h += 360;
+    }
+    return { h, s: max ? d / max : 0, v: max };
+  }
+
+  // Приводим rgb(...) в строках к hex (браузер любит возвращать rgb).
+  function rgbToHex(str) {
+    return String(str).replace(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)[^)]*\)/gi, (m, r, g, b) =>
+      '#' + [r, g, b].map(n => Number(n).toString(16).padStart(2, '0')).join(''));
+  }
+
+  function buildColorPicker() {
+    const wrap = document.createElement('div');
+    wrap.className = 'tt-picker__inner';
+
+    const top = document.createElement('div');
+    top.className = 'tt-picker__top';
+    const eye = document.createElement('button');
+    eye.type = 'button';
+    eye.className = 'tt-eye';
+    eye.title = 'Пипетка';
+    eye.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
+      'stroke-linecap="round" stroke-linejoin="round"><path d="M15 4l5 5-9 9-5 1 1-5z"/>' +
+      '<path d="M13 6l5 5"/><path d="M4 20l3.5-3.5"/></svg>';
+    eye.addEventListener('click', pickWithEyedropper);
+
+    const hex = document.createElement('input');
+    hex.type = 'text';
+    hex.spellcheck = false;
+    hex.maxLength = 7;
+    hex.className = 'tt-hex';
+    hex.addEventListener('focus', () => { hex._before = captureStyle(toolbarNodeId); });
+    hex.addEventListener('input', () => {
+      const v = normalizeHex(hex.value);
+      if (!v) return;
+      pickerHsv = hexToHsv(v);
+      updatePickerUI();
+      applyPickerColor(v, true);
+    });
+    hex.addEventListener('change', () => { pushStyleHistory(toolbarNodeId, hex._before); });
+
+    top.appendChild(eye);
+    top.appendChild(hex);
+    wrap.appendChild(top);
+
+    const hue = document.createElement('div');
+    hue.className = 'tt-hue';
+    const hueHandle = document.createElement('div');
+    hueHandle.className = 'tt-hue__handle';
+    hue.appendChild(hueHandle);
+    wrap.appendChild(hue);
+
+    const sv = document.createElement('div');
+    sv.className = 'tt-sv';
+    const svHandle = document.createElement('div');
+    svHandle.className = 'tt-sv__handle';
+    sv.appendChild(svHandle);
+    wrap.appendChild(sv);
+
+    pickerEls = { wrap, hex, hue, hueHandle, sv, svHandle };
+    bindHueDrag(hue);
+    bindSvDrag(sv);
+    return wrap;
+  }
+
+  function bindHueDrag(hue) {
+    hue.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      pickerDragging = true;
+      const before = captureStyle(toolbarNodeId);
+      hue.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        const r = hue.getBoundingClientRect();
+        pickerHsv.h = clamp01((ev.clientX - r.left) / r.width) * 360;
+        updatePickerUI();
+        applyPickerColor(hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v), true);
+      };
+      const up = () => {
+        pickerDragging = false;
+        hue.removeEventListener('pointermove', move);
+        hue.removeEventListener('pointerup', up);
+        pushStyleHistory(toolbarNodeId, before);
+      };
+      hue.addEventListener('pointermove', move);
+      hue.addEventListener('pointerup', up);
+      move(e);
+    });
+  }
+
+  function bindSvDrag(sv) {
+    sv.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      pickerDragging = true;
+      const before = captureStyle(toolbarNodeId);
+      sv.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        const r = sv.getBoundingClientRect();
+        pickerHsv.s = clamp01((ev.clientX - r.left) / r.width);
+        pickerHsv.v = 1 - clamp01((ev.clientY - r.top) / r.height);
+        updatePickerUI();
+        applyPickerColor(hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v), true);
+      };
+      const up = () => {
+        pickerDragging = false;
+        sv.removeEventListener('pointermove', move);
+        sv.removeEventListener('pointerup', up);
+        pushStyleHistory(toolbarNodeId, before);
+      };
+      sv.addEventListener('pointermove', move);
+      sv.addEventListener('pointerup', up);
+      move(e);
+    });
+  }
+
+  function updatePickerUI() {
+    if (!pickerEls) return;
+    const hueHex = hsvToHex(pickerHsv.h, 1, 1);
+    pickerEls.sv.style.setProperty('--hue', hueHex);
+    pickerEls.hueHandle.style.left = (pickerHsv.h / 360 * 100) + '%';
+    pickerEls.svHandle.style.left = (pickerHsv.s * 100) + '%';
+    pickerEls.svHandle.style.top = ((1 - pickerHsv.v) * 100) + '%';
+    pickerEls.svHandle.style.background = hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v);
+    if (document.activeElement !== pickerEls.hex) {
+      pickerEls.hex.value = hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v);
+    }
+  }
+
+  function syncPickerFromNode() {
+    if (!pickerEls || pickerDragging) return;
+    if (document.activeElement === pickerEls.hex) return;
+    const n = nodes.get(toolbarNodeId);
+    const hex = normalizeHex((n && n.color) || '') || '#1a1a1a';
+    pickerHsv = hexToHsv(hex);
+    pickerEls.hex.value = hex;
+    updatePickerUI();
+  }
+
+  function applyPickerColor(hex, live) {
+    if (pickerEls && document.activeElement !== pickerEls.hex) pickerEls.hex.value = hex;
+    if (!toolbarNodeId) return;
+    setNodeStyle(toolbarNodeId, { color: hex }, !!live);
+  }
+
+  function pickWithEyedropper() {
+    if (!window.EyeDropper) return;
+    const before = captureStyle(toolbarNodeId);
+    try {
+      new window.EyeDropper().open().then(res => {
+        const hex = normalizeHex(res && res.sRGBHex);
+        if (!hex) return;
+        pickerHsv = hexToHsv(hex);
+        updatePickerUI();
+        applyPickerColor(hex, true);
+        pushStyleHistory(toolbarNodeId, before);
+      }).catch(() => { /* отменено */ });
+    } catch (e) { /* не поддержано */ }
+  }
+
   function toggleToolbarMenu(btn) {
     const name = btn.dataset.menu;
     const menu = textToolbar.querySelector('.tt-menu[data-menu-for="' + name + '"]');
     if (!menu) return;
     if (toolbarMenu && toolbarMenu !== menu) toolbarMenu.classList.add('hidden');
     if (menu.classList.contains('hidden')) {
+      if (name === 'color') syncPickerFromNode();
       menu.style.left = btn.offsetLeft + 'px';
       menu.classList.remove('hidden');
       toolbarMenu = menu;
@@ -575,18 +823,6 @@ window.Board = (function () {
     const menu = item.closest('.tt-menu');
     const name = menu ? menu.dataset.menuFor : null;
     const value = item.dataset.value;
-
-    if (name === 'color' && value === '__custom__') {
-      const input = textToolbar.querySelector('.tt-color-input');
-      if (input) {
-        const n = nodes.get(toolbarNodeId);
-        input.value = (n && n.color) || '#1a1a1a';
-        input._before = captureStyle(toolbarNodeId);
-        input.click();
-      }
-      return;
-    }
-
     closeToolbarMenu();
     if (!toolbarNodeId || !name) return;
 
@@ -630,10 +866,11 @@ window.Board = (function () {
     textToolbar.classList.remove('hidden');
 
     setLabel('font', (FONT_FAMILIES.find(f => f.value === (n.fontFamily || '')) || FONT_FAMILIES[0]).label);
-    const sz = n.fontSize || (n.type === 'text' ? 20 : 14);
+    const sz = n.fontSize || DEFAULT_FONT_SIZE;
     const preset = FONT_SIZES.find(s => s.value === sz);
     setLabel('size', preset ? preset.label : sz + 'px');
-    setLabel('align', (n.align === 'center') ? '≡' : (n.align === 'right' ? '⯈' : '⯇'));
+    const alignLabel = textToolbar.querySelector('[data-role="align"]');
+    if (alignLabel) alignLabel.innerHTML = alignSvg(n.align || 'left');
     const dot = textToolbar.querySelector('.tt-dot');
     if (dot) dot.style.background = n.color || '#1a1a1a';
 
@@ -641,11 +878,7 @@ window.Board = (function () {
     markMenuItem('font', n.fontFamily || '');
     markMenuItem('size', preset ? sz : '__none__');
     markMenuItem('align', n.align || 'left');
-    const colorMenu = textToolbar.querySelector('.tt-menu[data-menu-for="color"]');
-    if (colorMenu) colorMenu.querySelectorAll('[data-value]').forEach(b =>
-      b.classList.toggle('is-active', b.dataset.value === (n.color || '#1a1a1a')));
-    const colorInput = textToolbar.querySelector('.tt-color-input');
-    if (colorInput) colorInput.value = n.color || '#1a1a1a';
+    syncPickerFromNode();
     const sizeInput = textToolbar.querySelector('.tt-num');
     if (sizeInput && document.activeElement !== sizeInput) sizeInput.value = sz;
 
@@ -677,16 +910,32 @@ window.Board = (function () {
     toolbarNodeId = null;
   }
 
+  // Выделение сохраняем, только если оно внутри активного элемента.
   function saveSelection() {
     const sel = window.getSelection();
-    if (sel && sel.rangeCount) savedRange = sel.getRangeAt(0).cloneRange();
+    if (!sel || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    const el = toolbarNodeId && nodeEls.get(toolbarNodeId);
+    if (el && !el.contains(range.startContainer)) return;
+    savedRange = range.cloneRange();
   }
 
   function restoreSelection() {
     if (!savedRange) return;
     const sel = window.getSelection();
     sel.removeAllRanges();
-    try { sel.addRange(savedRange); } catch (e) { /* ignore */ }
+    try { sel.addRange(savedRange); } catch (e) { /* устаревший диапазон */ }
+  }
+
+  // Отслеживаем системное выделение текста, чтобы панель не теряла его.
+  function onSelectionChange() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    const el = toolbarNodeId && nodeEls.get(toolbarNodeId);
+    if (el && el.contains(range.startContainer) && el.contains(range.endContainer)) {
+      savedRange = range.cloneRange();
+    }
   }
 
   function setNodeStyle(id, patch, live) {
@@ -707,6 +956,7 @@ window.Board = (function () {
     const n = id && nodes.get(id);
     if (!el || !n) return;
     const before = n.text || '';
+    saveSelection();
     el.focus();
     restoreSelection();
     ensureSelectionIn(el);
@@ -714,7 +964,8 @@ window.Board = (function () {
       document.execCommand('styleWithCSS', false, cmd !== 'createLink');
       document.execCommand(cmd, false, arg == null ? null : arg);
     } catch (e) { console.error('[format]', e); }
-    n.text = el.innerHTML;
+    // Сохраняем разметку с hex-цветами (браузер любит возвращать rgb).
+    n.text = rgbToHex(el.innerHTML);
     scheduleTextSave(id);
     pushHistory({ undo: () => {
       const nn = nodes.get(id);
@@ -1098,6 +1349,7 @@ window.Board = (function () {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('beforeunload', onBeforeUnload);
+    document.addEventListener('selectionchange', onSelectionChange);
 
     // Отключаем контекстное меню браузера (в т.ч. Яндекс) на холсте и элементах,
     // но оставляем его в полях ввода (заголовок, текстовые элементы).
@@ -1158,7 +1410,7 @@ window.Board = (function () {
     if (e.target.closest('.text-toolbar')) return;   // клики по панели форматирования
 
     const handle = e.target.closest('.sel-handle');
-    if (handle && selectedIds.size === 1) {
+    if (handle && e.button === 0 && selectedIds.size === 1) {
       startResize(e, handle.dataset.corner);
       return;
     }
@@ -1183,12 +1435,19 @@ window.Board = (function () {
       e.preventDefault();
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       if (e.shiftKey) { toggleSelection(id); return; }
-      if (!selectedIds.has(id)) selectOnly(id);
+      const wasSelected = selectedIds.has(id);
+      if (!wasSelected) selectOnly(id);
+      // Клик по уже выделенному (без перетаскивания) включает режим ввода.
+      clickCandidate = { id, wasSelected, moved: false, x: e.clientX, y: e.clientY };
       startDragGroup(e);
       return;
     }
 
-    // ЛКМ по пустому месту — рамка выделения.
+    // ЛКМ по пустому месту: сначала выходим из режима ввода, затем снимаем выделение.
+    if (isEditing()) {
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      return;
+    }
     startMarquee(e);
   }
 
@@ -1207,22 +1466,32 @@ window.Board = (function () {
     if (isDouble) startEditingNode(id);
   }
 
-  function startEditingNode(id) {
+  function startEditingNode(id, clientX, clientY) {
     const n = nodes.get(id);
     const el = nodeEls.get(id);
     if (!n || !el || !el.isContentEditable || isLockedByOther(id)) return;
     el.focus();
-    const sel = document.getSelection();
-    if (sel) {
-      const range = document.createRange();
+    const sel = window.getSelection();
+    if (!sel) return;
+    let range = null;
+    if (clientX != null && document.caretRangeFromPoint) {
+      try {
+        const r = document.caretRangeFromPoint(clientX, clientY);
+        if (r && el.contains(r.startContainer)) range = r;
+      } catch (e) { /* ignore */ }
+    }
+    sel.removeAllRanges();
+    if (!range) {
+      range = document.createRange();
       range.selectNodeContents(el);
       range.collapse(false);
-      sel.removeAllRanges();
-      sel.addRange(range);
     }
+    sel.addRange(range);
   }
 
-  // --- Изменение размера за угловые ручки ---
+  // --- Изменение размера за ручки (уголки — с шагом, бока — только ширина) ---
+
+  function snapSize(v) { return Math.round(v / RESIZE_STEP) * RESIZE_STEP; }
 
   function startResize(e, corner) {
     const id = [...selectedIds][0];
@@ -1230,14 +1499,18 @@ window.Board = (function () {
     const el = nodeEls.get(id);
     if (!n || !el || isLockedByOther(id)) return;
     e.preventDefault();
+    closeToolbarMenu();
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     resizing = {
       id, corner,
       startX: e.clientX, startY: e.clientY,
       ox: n.x, oy: n.y,
-      ow: el.offsetWidth || 0, oh: el.offsetHeight || 0
+      ow: el.offsetWidth || 0, oh: el.offsetHeight || 0,
+      origW: n.w, origH: n.h
     };
-    viewport.style.cursor = 'nwse-resize';
+    viewport.style.cursor =
+      (corner === 'e' || corner === 'w') ? 'ew-resize'
+        : (corner === 'nw' || corner === 'se') ? 'nwse-resize' : 'nesw-resize';
   }
 
   function doResize(e) {
@@ -1247,22 +1520,34 @@ window.Board = (function () {
     if (!n || !el) return;
     const dx = (e.clientX - r.startX) / view.scale;
     const dy = (e.clientY - r.startY) / view.scale;
-    const MIN = 40;
+    const MIN = 60;
+    const side = r.corner === 'e' || r.corner === 'w';
 
     let x = r.ox, y = r.oy, w = r.ow, h = r.oh;
-    if (r.corner.indexOf('e') >= 0) w = r.ow + dx;
-    if (r.corner.indexOf('s') >= 0) h = r.oh + dy;
-    if (r.corner.indexOf('w') >= 0) { w = r.ow - dx; x = r.ox + dx; }
-    if (r.corner.indexOf('n') >= 0) { h = r.oh - dy; y = r.oy + dy; }
-    if (w < MIN) { if (r.corner.indexOf('w') >= 0) x -= (MIN - w); w = MIN; }
-    if (h < MIN) { if (r.corner.indexOf('n') >= 0) y -= (MIN - h); h = MIN; }
+
+    if (side) {
+      // Боковая ручка — меняем только ширину, высота следует за текстом.
+      w = r.corner === 'e' ? r.ow + dx : r.ow - dx;
+      w = Math.max(MIN, snapSize(w));
+      if (r.corner === 'w') x = r.ox + (r.ow - w);
+      n.w = Math.round(w);
+    } else {
+      if (r.corner.indexOf('e') >= 0) w = r.ow + dx;
+      if (r.corner.indexOf('w') >= 0) w = r.ow - dx;
+      if (r.corner.indexOf('s') >= 0) h = r.oh + dy;
+      if (r.corner.indexOf('n') >= 0) h = r.oh - dy;
+      w = Math.max(MIN, snapSize(w));
+      h = Math.max(MIN, snapSize(h));
+      if (r.corner.indexOf('w') >= 0) x = r.ox + (r.ow - w);
+      if (r.corner.indexOf('n') >= 0) y = r.oy + (r.oh - h);
+      n.w = Math.round(w);
+      n.h = Math.round(h);
+    }
 
     n.x = Math.round(x); n.y = Math.round(y);
-    n.w = Math.round(w); n.h = Math.round(h);
     el.style.left = n.x + 'px';
     el.style.top = n.y + 'px';
-    el.style.width = n.w + 'px';
-    el.style.height = n.h + 'px';
+    applyNodeBox(el, n);
     updateSelectionBox();
     updateTextToolbar();
     queueLiveMove([n]);
@@ -1275,20 +1560,27 @@ window.Board = (function () {
     viewport.style.cursor = '';
     const n = nodes.get(r.id);
     if (!n) return;
-    const nx = Math.round(n.x), ny = Math.round(n.y), nw = Math.round(n.w), nh = Math.round(n.h);
-    const ox = Math.round(r.ox), oy = Math.round(r.oy), ow = Math.round(r.ow), oh = Math.round(r.oh);
-    if (projectId) window.Store.updateNode(projectId, r.id, { x: nx, y: ny, w: nw, h: nh }).catch(handleError);
-    if (nx === ox && ny === oy && nw === ow && nh === oh) return;
+
+    const patch = { x: Math.round(n.x), y: Math.round(n.y) };
+    if (n.w != null) patch.w = Math.round(n.w);
+    if (n.h != null) patch.h = Math.round(n.h);
+    if (projectId) window.Store.updateNode(projectId, r.id, patch).catch(handleError);
+
+    const ox = r.ox, oy = r.oy, ow = r.origW, oh = r.origH;
+    const changed = Math.round(n.x) !== ox || Math.round(n.y) !== oy ||
+      n.w !== ow || n.h !== oh;
+    if (!changed) return;
+
     pushHistory({ undo: () => {
       const nn = nodes.get(r.id);
       const ne = nodeEls.get(r.id);
       if (!nn) return;
       nn.x = ox; nn.y = oy; nn.w = ow; nn.h = oh;
-      if (ne) {
-        ne.style.left = ox + 'px'; ne.style.top = oy + 'px';
-        ne.style.width = ow + 'px'; ne.style.height = oh + 'px';
-      }
-      if (projectId) window.Store.updateNode(projectId, r.id, { x: ox, y: oy, w: ow, h: oh }).catch(() => {});
+      if (ne) { ne.style.left = ox + 'px'; ne.style.top = oy + 'px'; applyNodeBox(ne, nn); }
+      const back = { x: ox, y: oy };
+      if (ow != null) back.w = ow;
+      if (oh != null) back.h = oh;
+      if (projectId) window.Store.updateNode(projectId, r.id, back).catch(() => {});
       updateSelectionBox();
     } });
   }
@@ -1310,6 +1602,7 @@ window.Board = (function () {
     e.preventDefault();
     const p = screenToWorld(e.clientX, e.clientY);
     const base = (e.ctrlKey || e.metaKey || e.shiftKey) ? [...selectedIds] : [];
+    if (!base.length && selectedIds.size) clearSelection();
     marquee = {
       start: p,
       rect: { x: p.x, y: p.y, x2: p.x, y2: p.y },
@@ -1379,6 +1672,10 @@ window.Board = (function () {
       return;
     }
     if (dragGroup) {
+      if (clickCandidate && !clickCandidate.moved &&
+          Math.hypot(e.clientX - clickCandidate.x, e.clientY - clickCandidate.y) > 4) {
+        clickCandidate.moved = true;
+      }
       const dx = (e.clientX - dragGroup.startX) / view.scale;
       const dy = (e.clientY - dragGroup.startY) / view.scale;
       dragGroup.items.forEach(it => {
@@ -1445,6 +1742,13 @@ window.Board = (function () {
       }
     });
     dragGroup = null;
+
+    const cand = clickCandidate;
+    clickCandidate = null;
+    // Клик (без перетаскивания) по уже выделенному элементу — режим ввода.
+    if (cand && !cand.moved && !moves.length && cand.wasSelected && selectedIds.size === 1) {
+      startEditingNode(cand.id, cand.x, cand.y);
+    }
 
     if (moves.length) {
       pushHistory({

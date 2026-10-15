@@ -324,16 +324,19 @@ html, body {
   padding: 12px;
   background: var(--accent);
   box-shadow: var(--shadow);
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.4;
   outline: none;
   overflow-wrap: break-word;
 }
 .canvas-node--text {
   min-width: 60px;
-  font-size: 20px;
+  max-width: 360px;
+  font-size: 16px;
+  line-height: 1.4;
   outline: none;
   padding: 4px;
+  overflow-wrap: break-word;
 }
 .canvas-node--frame {
   width: 320px;
@@ -393,6 +396,14 @@ html, body {
 .sel-handle[data-corner="ne"] { right: -5px; top: -5px; cursor: nesw-resize; }
 .sel-handle[data-corner="sw"] { left: -5px; bottom: -5px; cursor: nesw-resize; }
 .sel-handle[data-corner="se"] { right: -5px; bottom: -5px; cursor: nwse-resize; }
+.sel-handle--side {
+  width: 10px;
+  height: 24px;
+  top: 50%;
+  margin-top: -12px;
+}
+.sel-handle[data-corner="e"] { right: -5px; left: auto; cursor: ew-resize; }
+.sel-handle[data-corner="w"] { left: -5px; right: auto; cursor: ew-resize; }
 
 .board-slug {
   font-size: 12px;
@@ -655,21 +666,73 @@ html, body {
 }
 .tt-colors .tt-menu__item { padding: 3px; justify-content: center; }
 .tt-colors .tt-check { display: none; }
+.tt-color-item.is-active .tt-swatch { border-color: #fff; box-shadow: 0 0 0 2px rgba(66, 98, 255, .9); }
+
+/* Иконки выравнивания */
+.tt-align-ico { width: 18px; height: 18px; flex: none; }
+.tt-btn [data-role="align"] { display: inline-flex; align-items: center; }
+
+/* Hex-пикер цвета */
+.tt-picker { padding: 10px; }
+.tt-picker__inner { width: 240px; }
+.tt-picker__top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.tt-eye {
+  flex: none; width: 30px; height: 30px; padding: 4px;
+  border: none; border-radius: 8px; background: transparent;
+  color: #cfd3dd; cursor: pointer;
+}
+.tt-eye:hover { background: rgba(255, 255, 255, .12); }
+.tt-eye svg { width: 20px; height: 20px; display: block; margin: auto; }
+.tt-hex {
+  flex: 1; min-width: 0; box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1.5px solid rgba(255, 255, 255, .25);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .06);
+  color: #e6e8ee;
+  font: inherit; font-size: 14px; letter-spacing: .5px;
+  text-transform: lowercase;
+}
+.tt-hex:focus { outline: none; border-color: #4c7dff; }
+.tt-hue {
+  position: relative; height: 22px; border-radius: 11px; margin-bottom: 10px;
+  background: linear-gradient(to right, #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%);
+  cursor: pointer;
+  touch-action: none;
+}
+.tt-hue__handle {
+  position: absolute; top: 50%; left: 0; width: 22px; height: 22px; margin-left: -11px;
+  transform: translateY(-50%);
+  border-radius: 50%; background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35), 0 1px 4px rgba(0, 0, 0, .4);
+  pointer-events: none;
+}
+.tt-sv {
+  position: relative; height: 160px; border-radius: 8px; cursor: crosshair;
+  touch-action: none;
+  background:
+    linear-gradient(to top, #000, rgba(0, 0, 0, 0)),
+    linear-gradient(to right, #fff, var(--hue, #f00));
+}
+.tt-sv__handle {
+  position: absolute; left: 0; top: 0; width: 14px; height: 14px; margin: -7px 0 0 -7px;
+  border-radius: 50%; border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .4);
+  pointer-events: none;
+}
+.tt-swatches {
+  display: grid; grid-template-columns: repeat(8, 1fr);
+  gap: 5px; padding: 4px 10px 10px;
+}
+.tt-swatch-btn {
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; border: none; background: transparent; cursor: pointer;
+}
 .tt-swatch {
   width: 22px; height: 22px; border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, .4); cursor: pointer;
 }
 .tt-swatch:hover { transform: scale(1.12); }
-.tt-color-item.is-active .tt-swatch { border-color: #fff; box-shadow: 0 0 0 2px rgba(66, 98, 255, .9); }
-.tt-swatch--rainbow {
-  background: conic-gradient(#ff5a5a, #ffb347, #ffe94d, #5ed86b, #4dc3ff, #8a6bff, #ff5ac8, #ff5a5a);
-}
-.tt-color-input {
-  position: absolute;
-  opacity: 0;
-  width: 0; height: 0;
-  pointer-events: none;
-}
 
 .canvas-node ul, .canvas-node ol { margin: 4px 0; padding-left: 22px; }
 .canvas-node a { color: inherit; text-decoration: underline; }
