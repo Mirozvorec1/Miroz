@@ -89,11 +89,18 @@
     },
 
     async deleteProject(id) {
-      const snap = await nodesCol(id).get();
-      const batch = db.batch();
-      snap.docs.forEach(d => batch.delete(d.ref));
-      batch.delete(projectsCol().doc(id));
-      await batch.commit();
+      // Удаляем проект в любом случае, даже если не удалось почистить nodes
+      // (например, из-за правил). Осиротевшие узлы не видны — проект удалён.
+      try {
+        const snap = await nodesCol(id).get();
+        const batch = db.batch();
+        snap.docs.forEach(d => batch.delete(d.ref));
+        batch.delete(projectsCol().doc(id));
+        await batch.commit();
+      } catch (e) {
+        console.warn('[deleteProject] batch failed, deleting doc only:', e.message);
+        await projectsCol().doc(id).delete();
+      }
       localStorage.removeItem(viewKey(id));
     },
 
@@ -126,7 +133,7 @@
       await nodesCol(projectId).doc(nodeId).delete();
     },
 
-    // Realtime-подписка на узлы. handlers: { onAdd, onModify, onRemove }.
+    // Realtime-подписка на узлы. handlers: { onAdd, onModify, onRemove, onError }.
     subscribeNodes(projectId, handlers) {
       return nodesCol(projectId).onSnapshot(snap => {
         snap.docChanges().forEach(ch => {
@@ -138,7 +145,10 @@
             else handlers.onModify(node);
           }
         });
-      }, err => console.error('[nodes] snapshot error:', err));
+      }, err => {
+        console.error('[nodes] snapshot error:', err);
+        if (handlers.onError) handlers.onError(err);
+      });
     },
 
     // --- Вид доски (локально у каждого пользователя) ---

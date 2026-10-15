@@ -24,6 +24,21 @@ window.Board = (function () {
   let panStart = null;
   let dragNode = null;
   let viewTimer = null;
+  let warnedPermission = false;
+
+  // Показываем ошибку синхронизации один раз, чтобы не спамить.
+  function handleError(err) {
+    console.error('[board]', err);
+    if (warnedPermission) return;
+    warnedPermission = true;
+    const msg = String((err && err.message) || err);
+    if (/permission|insufficient|missing/i.test(msg)) {
+      alert('Нет доступа к базе Firestore.\n\nОпубликуйте правила: Firestore → Rules. ' +
+        'Вложенная коллекция projects/{id}/nodes должна быть разрешена.');
+    } else {
+      alert('Ошибка синхронизации доски: ' + msg);
+    }
+  }
 
   function init() {
     viewport = document.getElementById('canvas-viewport');
@@ -71,15 +86,20 @@ window.Board = (function () {
     view.y = v.y || 0;
     view.scale = v.scale || 1;
 
-    const list = await window.Store.getNodes(pid);
-    list.forEach(renderOrAdd);
+    try {
+      const list = await window.Store.getNodes(pid);
+      list.forEach(renderOrAdd);
+    } catch (err) {
+      handleError(err);
+    }
     applyView();
     renderPresence();
 
     unsubscribe = window.Store.subscribeNodes(pid, {
       onAdd: renderOrAdd,
       onModify: applyRemoteNode,
-      onRemove: removeNodeById
+      onRemove: removeNodeById,
+      onError: handleError
     });
   }
 
@@ -148,7 +168,7 @@ window.Board = (function () {
     clearTimeout(textTimers.get(id));
     textTimers.set(id, setTimeout(() => {
       const n = nodes.get(id);
-      if (n) window.Store.updateNode(projectId, id, { text: n.text });
+      if (n) window.Store.updateNode(projectId, id, { text: n.text }).catch(handleError);
     }, 500));
   }
 
@@ -166,7 +186,7 @@ window.Board = (function () {
     };
     nodes.set(node.id, node);
     renderNode(node);
-    window.Store.addNode(projectId, node).catch(err => console.error(err));
+    window.Store.addNode(projectId, node).catch(handleError);
 
     if (type !== 'frame') {
       const el = nodeEls.get(node.id);
@@ -319,7 +339,7 @@ window.Board = (function () {
       el.style.top = node.y + 'px';
       draggingIds.delete(node.id);
       window.Store.updateNode(projectId, node.id, { x: node.x, y: node.y })
-        .catch(err => console.error(err));
+        .catch(handleError);
       dragNode = null;
     }
   }

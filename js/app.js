@@ -76,9 +76,14 @@
       card.addEventListener('click', () => openBoard(p.id));
       card.querySelector('.project-card__delete').addEventListener('click', async (e) => {
         e.stopPropagation();
-        if (confirm(`Удалить проект «${p.name}»?`)) {
+        if (!confirm(`Удалить проект «${p.name}»?`)) return;
+        try {
           await window.Store.deleteProject(p.id);
           if (!unsubProjects) renderProjects();
+        } catch (err) {
+          console.error(err);
+          alert('Не удалось удалить проект: ' + err.message +
+            '\n\nПроверьте правила Firestore (Firestore → Rules).');
         }
       });
 
