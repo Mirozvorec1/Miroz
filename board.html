@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Доска — Miroz</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <section id="screen-board" class="screen is-active">
+    <header class="board-bar">
+      <a id="btn-back" class="btn btn--ghost" href="index.html" title="К списку проектов">← Проекты</a>
+      <input id="board-title" class="board-title" value="Проект" spellcheck="false" />
+      <span id="board-slug" class="board-slug"></span>
+      <div class="board-bar__spacer"></div>
+      <div class="board-bar__tools">
+        <button class="tool" data-tool="select" title="Выбор">⇱</button>
+        <button class="tool" data-tool="sticky" title="Стикер">▭</button>
+        <button class="tool" data-tool="text" title="Текст">T</button>
+        <button class="tool" data-tool="frame" title="Фрейм">▢</button>
+      </div>
+      <div class="board-bar__spacer"></div>
+      <div class="board-bar__zoom">
+        <button id="zoom-out" class="btn btn--ghost" title="Уменьшить">−</button>
+        <span id="zoom-value" class="zoom-value">100%</span>
+        <button id="zoom-in" class="btn btn--ghost" title="Увеличить">+</button>
+        <button id="zoom-reset" class="btn btn--ghost" title="Сбросить">⤢</button>
+      </div>
+      <div class="board-bar__users">
+        <div id="presence" class="presence"></div>
+      </div>
+    </header>
+
+    <div id="canvas-viewport" class="canvas-viewport" data-tool="select">
+      <div id="canvas-world" class="canvas-world">
+        <div class="canvas-grid"></div>
+      </div>
+      <div id="canvas-hint" class="canvas-hint">Выберите инструмент и нажмите на холст</div>
+    </div>
+  </section>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="js/config.js"></script>
+  <!-- PROJECT_ID -->
+  <script>window.PROJECT_ID = window.PROJECT_ID || new URLSearchParams(location.search).get('id');</script>
+  <script src="js/storage.js"></script>
+  <script src="js/firebase.js"></script>
+  <script src="js/board.js"></script>
+  <script src="js/board-page.js"></script>
+</body>
+</html>

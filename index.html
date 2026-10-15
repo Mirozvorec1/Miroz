@@ -57,37 +57,31 @@
     </main>
   </section>
 
-  <!-- ЭКРАН 2: доска -->
-  <section id="screen-board" class="screen">
-    <header class="board-bar">
-      <button id="btn-back" class="btn btn--ghost" title="К списку проектов">← Проекты</button>
-      <input id="board-title" class="board-title" value="Проект" spellcheck="false" />
-      <div class="board-bar__spacer"></div>
-      <div class="board-bar__tools">
-        <button class="tool" data-tool="select" title="Выбор">⇱</button>
-        <button class="tool" data-tool="sticky" title="Стикер">▭</button>
-        <button class="tool" data-tool="text" title="Текст">T</button>
-        <button class="tool" data-tool="frame" title="Фрейм">▢</button>
-      </div>
-      <div class="board-bar__spacer"></div>
-      <div class="board-bar__zoom">
-        <button id="zoom-out" class="btn btn--ghost" title="Уменьшить">−</button>
-        <span id="zoom-value" class="zoom-value">100%</span>
-        <button id="zoom-in" class="btn btn--ghost" title="Увеличить">+</button>
-        <button id="zoom-reset" class="btn btn--ghost" title="Сбросить">⤢</button>
-      </div>
-      <div class="board-bar__users">
-        <div id="presence" class="presence"></div>
-      </div>
-    </header>
+  <!-- Модалка создания проекта -->
+  <div id="modal-create" class="modal hidden">
+    <div class="modal__backdrop" data-close="modal-create"></div>
+    <div class="modal__card">
+      <h2 class="modal__title">Новый проект</h2>
 
-    <div id="canvas-viewport" class="canvas-viewport" data-tool="select">
-      <div id="canvas-world" class="canvas-world">
-        <div class="canvas-grid"></div>
+      <label class="field">
+        <span class="field__label">ID проекта <em>— латиница, изменить нельзя</em></span>
+        <input id="np-id" class="field__input" placeholder="my-project" autocomplete="off" spellcheck="false" />
+        <span class="field__hint">a–z, 0–9, дефис и подчёркивание. Станет адресом: <code id="np-preview">/my-project.html</code></span>
+      </label>
+
+      <label class="field">
+        <span class="field__label">Название <em>— можно менять потом</em></span>
+        <input id="np-name" class="field__input" placeholder="Мой проект" autocomplete="off" />
+      </label>
+
+      <p id="np-error" class="field__error hidden"></p>
+
+      <div class="modal__actions">
+        <button id="np-cancel" class="btn btn--ghost">Отмена</button>
+        <button id="np-create" class="btn btn--primary">Создать</button>
       </div>
-      <div id="canvas-hint" class="canvas-hint">Выберите инструмент и нажмите на холст</div>
     </div>
-  </section>
+  </div>
 
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
@@ -95,7 +89,6 @@
   <script src="js/config.js"></script>
   <script src="js/storage.js"></script>
   <script src="js/firebase.js"></script>
-  <script src="js/board.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

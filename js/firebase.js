@@ -50,6 +50,11 @@
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
     },
 
+    async getProject(slug) {
+      const doc = await projectsCol().doc(slug).get();
+      return doc.exists ? { id: doc.id, ...doc.data() } : null;
+    },
+
     // Realtime-список проектов. Возвращает функцию отписки.
     subscribeProjects(onChange) {
       return projectsCol().orderBy('updatedAt', 'desc').onSnapshot(snap => {
@@ -57,20 +62,24 @@
       }, err => console.error('[projects] snapshot error:', err));
     },
 
-    async createProject(name) {
+    async createProject(slug, name) {
       const user = window.currentUser;
+      const ref = projectsCol().doc(slug);
+      const existing = await ref.get();
+      if (existing.exists) throw new Error('ID уже занят');
+
       const now = Date.now();
-      const id = uid();
       const project = {
-        id,
-        name: (name || 'Без названия').trim() || 'Без названия',
+        id: slug,
+        slug,
+        name: (name || slug).trim() || slug,
         ownerId: user ? user.uid : 'anon',
         ownerName: user ? (user.displayName || user.email || 'Гость') : 'Гость',
         members: user ? [user.uid] : [],
         createdAt: now,
         updatedAt: now
       };
-      await projectsCol().doc(id).set(project);
+      await ref.set(project);
       return project;
     },
 

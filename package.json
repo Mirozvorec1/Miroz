@@ -1,0 +1,13 @@
+{
+  "name": "miroz",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Miro-подобная доска для совместной работы (Firebase).",
+  "scripts": {
+    "pages": "node tools/generate-pages.js",
+    "serve": "python -m http.server 8000"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.5.0"
+  }
+}

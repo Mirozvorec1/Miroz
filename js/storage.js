@@ -3,8 +3,8 @@
 // Интерфейс асинхронный и совпадает с FirestoreStore из js/firebase.js,
 // поэтому при включённом Firebase window.Store переключается без правок UI.
 //
-// Каждый элемент доски — отдельная запись (узел), как и в Firestore:
-// это позволяет синхронизировать изменения по одному элементу.
+// ID проекта (slug) — неизменяемый, только латиница; он же id документа
+// и имя сгенерированного html-файла (<slug>.html).
 
 window.__LocalStore = (function () {
   const KEY_PROJECTS = 'miroz.projects';
@@ -29,24 +29,30 @@ window.__LocalStore = (function () {
     return read(KEY_PROJECTS, []).sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
+  async function getProject(slug) {
+    return read(KEY_PROJECTS, []).find(p => p.id === slug) || null;
+  }
+
   function touchProject(id) {
     const projects = read(KEY_PROJECTS, []);
     const p = projects.find(x => x.id === id);
     if (p) { p.updatedAt = Date.now(); write(KEY_PROJECTS, projects); }
   }
 
-  async function createProject(name) {
+  async function createProject(slug, name) {
+    const projects = read(KEY_PROJECTS, []);
+    if (projects.some(p => p.id === slug)) throw new Error('ID уже занят');
     const now = Date.now();
     const project = {
-      id: uid(),
-      name: (name || 'Без названия').trim() || 'Без названия',
+      id: slug,
+      slug,
+      name: (name || slug).trim() || slug,
       ownerId: window.APP_CONFIG.localUser.id,
       ownerName: window.APP_CONFIG.localUser.name,
       members: [],
       createdAt: now,
       updatedAt: now
     };
-    const projects = read(KEY_PROJECTS, []);
     projects.push(project);
     write(KEY_PROJECTS, projects);
     return project;
@@ -89,7 +95,6 @@ window.__LocalStore = (function () {
     touchProject(projectId);
   }
 
-  // Локально realtime нет — подписка ничего не делает.
   function subscribeNodes() { return function unsubscribe() {}; }
 
   // --- Вид доски (персональный для каждого пользователя) ---
@@ -104,6 +109,7 @@ window.__LocalStore = (function () {
 
   return {
     listProjects,
+    getProject,
     createProject,
     renameProject,
     deleteProject,

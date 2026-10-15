@@ -1,16 +1,21 @@
-// Основная логика: переключение экранов и список проектов.
+// Стартовая страница: вход + список проектов + создание проекта.
 
 (function () {
   const screenLogin = document.getElementById('screen-login');
   const screenProjects = document.getElementById('screen-projects');
-  const screenBoard = document.getElementById('screen-board');
   const grid = document.getElementById('projects-grid');
   const empty = document.getElementById('projects-empty');
-  const boardTitle = document.getElementById('board-title');
   const userBadge = document.getElementById('user-badge');
   const loginError = document.getElementById('login-error');
 
-  let currentProject = null;
+  const modal = document.getElementById('modal-create');
+  const npId = document.getElementById('np-id');
+  const npName = document.getElementById('np-name');
+  const npError = document.getElementById('np-error');
+  const npPreview = document.getElementById('np-preview');
+
+  const SLUG_RE = /^[a-z0-9][a-z0-9_-]{1,38}[a-z0-9]$/;
+
   let unsubProjects = null;
 
   // --- Роутер ---
@@ -18,22 +23,10 @@
   function showScreen(name) {
     screenLogin.classList.toggle('is-active', name === 'login');
     screenProjects.classList.toggle('is-active', name === 'projects');
-    screenBoard.classList.toggle('is-active', name === 'board');
   }
 
-  async function openProject(project) {
-    currentProject = project;
-    boardTitle.value = project.name;
-    document.title = project.name + ' — Miroz';
-    showScreen('board');
-    await window.Board.load(project.id);
-  }
-
-  async function goToProjects() {
-    window.Board.unload();
-    currentProject = null;
-    document.title = 'Miroz';
-    showScreen('projects');
+  function openBoard(slug) {
+    location.href = 'board.html?id=' + encodeURIComponent(slug);
   }
 
   // --- Список проектов ---
@@ -63,9 +56,7 @@
 
   function renderProjectList(projects) {
     grid.innerHTML = '';
-
-    const hasItems = projects.length > 0;
-    empty.classList.toggle('hidden', hasItems);
+    empty.classList.toggle('hidden', projects.length > 0);
 
     projects.forEach(p => {
       const card = document.createElement('div');
@@ -79,9 +70,10 @@
         <button class="project-card__delete" title="Удалить">×</button>
       `;
       card.querySelector('.project-card__name').textContent = p.name;
-      card.querySelector('.project-card__meta').textContent = formatDate(p.updatedAt);
+      card.querySelector('.project-card__meta').textContent =
+        '#' + p.id + ' · ' + formatDate(p.updatedAt);
 
-      card.addEventListener('click', () => openProject(p));
+      card.addEventListener('click', () => openBoard(p.id));
       card.querySelector('.project-card__delete').addEventListener('click', async (e) => {
         e.stopPropagation();
         if (confirm(`Удалить проект «${p.name}»?`)) {
@@ -96,27 +88,61 @@
 
   function formatDate(ts) {
     if (!ts) return '';
-    const d = new Date(ts);
-    return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+    return new Date(ts).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
   }
 
-  // --- Создание проекта ---
+  // --- Модалка создания ---
 
-  async function createProjectFlow() {
-    const name = prompt('Название проекта:', 'Новый проект');
-    if (name === null) return;
-    const project = await window.Store.createProject(name);
-    await openProject(project);
+  function openCreateModal() {
+    npId.value = '';
+    npName.value = '';
+    npError.classList.add('hidden');
+    updatePreview();
+    modal.classList.remove('hidden');
+    npId.focus();
+  }
+
+  function closeCreateModal() { modal.classList.add('hidden'); }
+
+  function sanitizeSlug(value) {
+    return value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  }
+
+  function updatePreview() {
+    const slug = npId.value.trim();
+    npPreview.textContent = '/' + (slug || 'id') + '.html';
+  }
+
+  async function submitCreate() {
+    const slug = npId.value.trim();
+    const name = npName.value.trim() || slug;
+
+    if (!SLUG_RE.test(slug)) {
+      npError.textContent = 'ID: 3–40 символов, только a–z, 0–9, «-» и «_» (не в начале/конце).';
+      npError.classList.remove('hidden');
+      return;
+    }
+
+    const btn = document.getElementById('np-create');
+    btn.disabled = true;
+    npError.classList.add('hidden');
+    try {
+      await window.Store.createProject(slug, name);
+      closeCreateModal();
+      openBoard(slug);
+    } catch (err) {
+      npError.textContent = err.message;
+      npError.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   // --- Инициализация ---
 
   function init() {
-    window.Board.init();
-
-    document.getElementById('btn-create-project').addEventListener('click', createProjectFlow);
-    document.getElementById('btn-back').addEventListener('click', goToProjects);
     document.getElementById('btn-logout').addEventListener('click', () => window.Auth.signOut());
+    document.getElementById('btn-create-project').addEventListener('click', openCreateModal);
 
     document.getElementById('btn-google').addEventListener('click', async () => {
       loginError.classList.add('hidden');
@@ -128,16 +154,26 @@
       }
     });
 
-    boardTitle.addEventListener('change', async () => {
-      if (!currentProject) return;
-      const name = boardTitle.value.trim() || 'Без названия';
-      boardTitle.value = name;
-      await window.Store.renameProject(currentProject.id, name);
-      currentProject.name = name;
-      document.title = name + ' — Miroz';
-    });
+    // Модалка
+    document.getElementById('np-cancel').addEventListener('click', closeCreateModal);
+    document.getElementById('np-create').addEventListener('click', submitCreate);
+    modal.querySelectorAll('[data-close="modal-create"]').forEach(el =>
+      el.addEventListener('click', closeCreateModal));
 
-    // Реакция на смену пользователя: показать вход или список проектов.
+    npId.addEventListener('input', () => {
+      const caret = npId.selectionStart;
+      const clean = sanitizeSlug(npId.value);
+      if (clean !== npId.value) {
+        npId.value = clean;
+        npId.setSelectionRange(Math.min(caret, clean.length), Math.min(caret, clean.length));
+      }
+      npError.classList.add('hidden');
+      updatePreview();
+    });
+    npId.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitCreate(); });
+    npName.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitCreate(); });
+
+    // Реакция на смену пользователя.
     window.Auth.onChange((user) => {
       if (user) {
         userBadge.textContent = user.displayName || user.email || 'Пользователь';
@@ -147,7 +183,7 @@
         startProjects();
       } else {
         stopProjects();
-        window.Board.unload();
+        closeCreateModal();
         userBadge.textContent = 'Гость';
         userBadge.title = 'Не авторизован';
         document.getElementById('btn-logout').classList.add('hidden');
