@@ -74,6 +74,7 @@ window.Board = (function () {
 
   const MIN_SCALE = 0.2;
   const MAX_SCALE = 4;
+  const GRID_SIZE = 40;   // шаг точек фона (должен совпадать с CSS .canvas-grid)
   const view = { x: 0, y: 0, scale: 1 };
 
   let activeTool = 'select';
@@ -147,7 +148,7 @@ window.Board = (function () {
   function applyView() {
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
     if (gridEl) {
-      gridEl.style.backgroundSize = `${24 * view.scale}px ${24 * view.scale}px`;
+      gridEl.style.backgroundSize = `${GRID_SIZE * view.scale}px ${GRID_SIZE * view.scale}px`;
       gridEl.style.backgroundPosition = `${view.x}px ${view.y}px`;
     }
     const zv = document.getElementById('zoom-value');

@@ -274,7 +274,7 @@ html, body {
   position: relative;
   flex: 1 1 auto;
   overflow: hidden;
-  background: #f4f5f7;
+  background: #f1f2f4;
   cursor: default;
 }
 .canvas-viewport[data-tool="sticky"],
@@ -293,8 +293,8 @@ html, body {
   position: absolute;
   inset: 0;
   background-image:
-    radial-gradient(circle, #d3d7de 1px, transparent 1px);
-  background-size: 24px 24px;
+    radial-gradient(circle, #c6c9d0 2px, transparent 2px);
+  background-size: 40px 40px;
   pointer-events: none;
 }
 
