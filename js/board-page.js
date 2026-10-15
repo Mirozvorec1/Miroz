@@ -19,22 +19,26 @@
     // Выпадающее меню (☰) с пунктом "В меню".
     const menuBtn = document.getElementById('btn-menu');
     const menu = document.getElementById('board-menu');
-    menuBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      menu.classList.toggle('hidden');
-    });
-    document.addEventListener('click', () => menu.classList.add('hidden'));
+    if (menuBtn && menu) {
+      menuBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        menu.classList.toggle('hidden');
+      });
+      document.addEventListener('click', () => menu.classList.add('hidden'));
+    }
 
-    titleInput.addEventListener('change', async () => {
-      const name = titleInput.value.trim() || projectId;
-      titleInput.value = name;
-      try {
-        await window.Store.renameProject(projectId, name);
-        document.title = name + ' — Miroz';
-      } catch (err) {
-        alert('Не удалось переименовать: ' + err.message);
-      }
-    });
+    if (titleInput) {
+      titleInput.addEventListener('change', async () => {
+        const name = titleInput.value.trim() || projectId;
+        titleInput.value = name;
+        try {
+          await window.Store.renameProject(projectId, name);
+          document.title = name + ' — Miroz';
+        } catch (err) {
+          alert('Не удалось переименовать: ' + err.message);
+        }
+      });
+    }
 
     window.Auth.onChange(async (user) => {
       if (!user) { goHome(); return; }
@@ -48,8 +52,8 @@
       }
       if (!project) { goHome('Проект «' + projectId + '» не найден'); return; }
 
-      titleInput.value = project.name;
-      slugLabel.textContent = '#' + projectId;
+      if (titleInput) titleInput.value = project.name;
+      if (slugLabel) slugLabel.textContent = '#' + projectId;
       document.title = project.name + ' — Miroz';
 
       await window.Board.load(projectId);
