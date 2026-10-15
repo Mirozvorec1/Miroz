@@ -6,6 +6,8 @@
 
 window.Board = (function () {
   let viewport, world;
+  let gridEl = null;   // фон-сетка (живёт в viewport, тайлится бесконечно)
+  let selBox = null;   // рамка вокруг группы выделенных элементов
   let projectId = null;
   let unsubscribe = null;
 
@@ -67,6 +69,20 @@ window.Board = (function () {
   function init() {
     viewport = document.getElementById('canvas-viewport');
     world = document.getElementById('canvas-world');
+
+    // Сетку-фон переносим из world в viewport: она не должна уезжать при
+    // панорамировании, а её смещение задаётся через background-position.
+    gridEl = world.querySelector('.canvas-grid');
+    if (gridEl && gridEl.parentNode === world) viewport.insertBefore(gridEl, world);
+
+    // Рамка вокруг группы выделенных элементов.
+    selBox = document.createElement('div');
+    selBox.className = 'sel-box hidden';
+    viewport.appendChild(selBox);
+
+    const hint = document.getElementById('canvas-hint');
+    if (hint) hint.textContent = 'ЛКМ — выделение и рамка, СКМ — перемещение доски';
+
     bindEvents();
   }
 
@@ -74,10 +90,13 @@ window.Board = (function () {
 
   function applyView() {
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
-    const grid = world.querySelector('.canvas-grid');
-    if (grid) grid.style.backgroundSize = `${24 * view.scale}px ${24 * view.scale}px`;
+    if (gridEl) {
+      gridEl.style.backgroundSize = `${24 * view.scale}px ${24 * view.scale}px`;
+      gridEl.style.backgroundPosition = `${view.x}px ${view.y}px`;
+    }
     const zv = document.getElementById('zoom-value');
     if (zv) zv.textContent = Math.round(view.scale * 100) + '%';
+    updateSelectionBox();
   }
 
   function scheduleViewSave() {
@@ -277,7 +296,39 @@ window.Board = (function () {
   // --- Выделение ---
 
   function refreshSelection() {
-    nodeEls.forEach((el, id) => el.classList.toggle('is-selected', selectedIds.has(id)));
+    const multi = selectedIds.size > 1;
+    nodeEls.forEach((el, id) => {
+      const on = selectedIds.has(id);
+      el.classList.toggle('is-selected', on);
+      el.classList.toggle('is-in-group', on && multi);
+    });
+    updateSelectionBox();
+  }
+
+  // Рамка вокруг всей выделенной группы (в экранных координатах).
+  function updateSelectionBox() {
+    if (!selBox) return;
+    if (selectedIds.size < 2) { selBox.classList.add('hidden'); return; }
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    selectedIds.forEach(id => {
+      const n = nodes.get(id);
+      const el = nodeEls.get(id);
+      if (!n || !el) return;
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + (el.offsetWidth || 0));
+      maxY = Math.max(maxY, n.y + (el.offsetHeight || 0));
+    });
+    if (!isFinite(minX)) { selBox.classList.add('hidden'); return; }
+
+    const a = worldToScreen(minX, minY);
+    const b = worldToScreen(maxX, maxY);
+    selBox.style.left = a.x + 'px';
+    selBox.style.top = a.y + 'px';
+    selBox.style.width = (b.x - a.x) + 'px';
+    selBox.style.height = (b.y - a.y) + 'px';
+    selBox.classList.remove('hidden');
   }
 
   function selectOnly(id) {
@@ -485,13 +536,27 @@ window.Board = (function () {
     cursorRaf = requestAnimationFrame(frame);
   }
 
+  // Одному пользователю — один курсор (даже если открыто несколько вкладок):
+  // оставляем сессию с самой свежей активностью.
+  function dedupeCursors(users) {
+    const byUid = new Map();
+    users.forEach(u => {
+      if (!u || !u.sessionId) return;
+      if (u.x == null || u.y == null) return;   // без позиции курсора показывать нечего
+      const key = u.uid || u.sessionId;
+      const prev = byUid.get(key);
+      if (!prev || (u.updatedAt || 0) >= (prev.updatedAt || 0)) byUid.set(key, u);
+    });
+    return [...byUid.values()];
+  }
+
   function renderCursors(users) {
     presenceUsers = Array.isArray(users) ? users : [];
     const layer = document.getElementById('cursors');
     const alive = new Set();
 
     if (layer) {
-      presenceUsers.forEach(u => {
+      dedupeCursors(presenceUsers).forEach(u => {
         if (!u || !u.sessionId) return;          // себя Presence уже отфильтровал
         if (u.x == null || u.y == null) return;  // ещё не двигал курсором
         alive.add(u.sessionId);
@@ -675,9 +740,10 @@ window.Board = (function () {
   }
 
   function onMouseDown(e) {
-    if (e.button === 2 && !isEditing()) { startMarquee(e); return; }
-    if (e.button === 1 || spaceDown) { startPan(e); return; }
+    if (e.button === 1) { startPan(e); return; }   // СКМ — перемещение доски
+    if (e.button === 2) return;                     // ПКМ — ничего (меню отключено)
     if (e.button !== 0) return;
+    if (spaceDown) { startPan(e); return; }
 
     if (activeTool !== 'select') {
       const p = screenToWorld(e.clientX, e.clientY);
@@ -699,8 +765,8 @@ window.Board = (function () {
       return;
     }
 
-    clearSelection();
-    startPan(e);
+    // ЛКМ по пустому месту — рамка выделения.
+    startMarquee(e);
   }
 
   function startDragGroup(e) {
@@ -714,7 +780,7 @@ window.Board = (function () {
     dragGroup = { startX: e.clientX, startY: e.clientY, items };
   }
 
-  // --- Рамка выделения (ПКМ) ---
+  // --- Рамка выделения (ЛКМ по пустому месту) ---
 
   function startMarquee(e) {
     e.preventDefault();
@@ -772,8 +838,16 @@ window.Board = (function () {
   }
 
   function startPan(e) {
+    if (e && e.preventDefault) e.preventDefault();  // не даём браузеру автоскролл на СКМ
     panning = true;
     panStart = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+    viewport.style.cursor = 'grabbing';   // «hold»-рука при перемещении
+  }
+
+  function endPan() {
+    panning = false;
+    panStart = null;
+    viewport.style.cursor = spaceDown ? 'grab' : '';
   }
 
   function onMouseMove(e) {
@@ -793,6 +867,7 @@ window.Board = (function () {
         it.el.style.left = it.node.x + 'px';
         it.el.style.top = it.node.y + 'px';
       });
+      updateSelectionBox();
       queueLiveMove(dragGroup.items.map(it => it.node));
     }
   }
@@ -820,7 +895,7 @@ window.Board = (function () {
 
   function onMouseUp() {
     if (marquee) { endMarquee(); return; }
-    if (panning) { panning = false; scheduleViewSave(); }
+    if (panning) { endPan(); scheduleViewSave(); }
     if (dragGroup) { endDragGroup(); }
   }
 
@@ -892,8 +967,7 @@ window.Board = (function () {
   function onKeyUp(e) {
     if (e.code === 'Space') {
       spaceDown = false;
-      panning = false;
-      viewport.style.cursor = '';
+      viewport.style.cursor = panning ? 'grabbing' : '';
     }
   }
 

@@ -295,6 +295,7 @@ html, body {
   background-image:
     radial-gradient(circle, #d3d7de 1px, transparent 1px);
   background-size: 24px 24px;
+  pointer-events: none;
 }
 
 .canvas-node {
@@ -304,6 +305,12 @@ html, body {
 .canvas-node.is-selected {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
+}
+/* В группе личные обводки тусклее — сама группа обведена рамкой .sel-box. */
+.canvas-node.is-selected.is-in-group {
+  outline-width: 1px;
+  outline-style: dashed;
+  outline-color: rgba(66, 98, 255, .45);
 }
 /* Узел занят другим участником: обводка цветом его курсора. */
 .canvas-node.is-locked {
@@ -356,6 +363,16 @@ html, body {
   border-radius: 2px;
   pointer-events: none;
   z-index: 6;
+}
+
+/* Рамка вокруг группы выделенных элементов */
+.sel-box {
+  position: absolute;
+  border: 1.5px solid var(--primary);
+  background: rgba(66, 98, 255, .05);
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 4;
 }
 
 .board-slug {
