@@ -83,6 +83,56 @@
     </div>
   </div>
 
+  <!-- Модалка настроек проекта -->
+  <div id="modal-settings" class="modal hidden">
+    <div class="modal__backdrop" data-close="modal-settings"></div>
+    <div class="modal__card">
+      <h2 class="modal__title">Настройки проекта</h2>
+
+      <div class="field">
+        <span class="field__label">Обложка <em>— ссылка на картинку</em></span>
+        <div id="sp-cover-preview" class="cover-preview">
+          <span id="sp-cover-empty">Нет обложки</span>
+          <img id="sp-cover-img" class="hidden" alt="" />
+        </div>
+        <input id="sp-cover" class="field__input" placeholder="https://…" autocomplete="off" spellcheck="false" />
+      </div>
+
+      <label class="field">
+        <span class="field__label">Название</span>
+        <input id="sp-name" class="field__input" autocomplete="off" />
+      </label>
+
+      <label class="field">
+        <span class="field__label">ID <em>— изменить нельзя</em></span>
+        <input id="sp-id" class="field__input" readonly />
+        <span class="field__hint">Адрес доски: <code id="sp-url"></code></span>
+      </label>
+
+      <p id="sp-error" class="field__error hidden"></p>
+
+      <div class="modal__actions modal__actions--spread">
+        <button id="sp-delete" class="btn btn--danger">Удалить проект</button>
+        <span>
+          <button id="sp-cancel" class="btn btn--ghost" data-close="modal-settings">Отмена</button>
+          <button id="sp-save" class="btn btn--primary">Сохранить</button>
+        </span>
+      </div>
+
+      <div id="sp-confirm" class="danger hidden">
+        <p class="danger__text">
+          Удаление необратимо. Введите ID проекта <code id="sp-confirm-id"></code>,
+          чтобы подтвердить.
+        </p>
+        <input id="sp-confirm-input" class="field__input" placeholder="введите ID" autocomplete="off" spellcheck="false" />
+        <div class="modal__actions">
+          <button id="sp-confirm-cancel" class="btn btn--ghost">Отмена</button>
+          <button id="sp-confirm-delete" class="btn btn--danger" disabled>Удалить навсегда</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>

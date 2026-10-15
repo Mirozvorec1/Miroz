@@ -88,6 +88,16 @@
       return { id, name };
     },
 
+    // Обновление редактируемых полей проекта (название, обложка и т.п.).
+    async updateProject(id, patch) {
+      const data = {};
+      if (patch.name != null) data.name = String(patch.name).trim();
+      if (patch.cover != null) data.cover = String(patch.cover);
+      data.updatedAt = Date.now();
+      await projectsCol().doc(id).update(data);
+      return { id, ...data };
+    },
+
     async deleteProject(id) {
       // Удаляем проект в любом случае, даже если не удалось почистить nodes
       // (например, из-за правил). Осиротевшие узлы не видны — проект удалён.

@@ -14,6 +14,22 @@
   const npError = document.getElementById('np-error');
   const npPreview = document.getElementById('np-preview');
 
+  // Настройки проекта
+  const settingsModal = document.getElementById('modal-settings');
+  const spName = document.getElementById('sp-name');
+  const spId = document.getElementById('sp-id');
+  const spUrl = document.getElementById('sp-url');
+  const spCover = document.getElementById('sp-cover');
+  const spCoverImg = document.getElementById('sp-cover-img');
+  const spCoverEmpty = document.getElementById('sp-cover-empty');
+  const spError = document.getElementById('sp-error');
+  const spConfirm = document.getElementById('sp-confirm');
+  const spConfirmId = document.getElementById('sp-confirm-id');
+  const spConfirmInput = document.getElementById('sp-confirm-input');
+  const spConfirmDelete = document.getElementById('sp-confirm-delete');
+
+  let currentSettings = null;
+
   const SLUG_RE = /^[a-z0-9][a-z0-9_-]{1,38}[a-z0-9]$/;
 
   let unsubProjects = null;
@@ -62,33 +78,135 @@
       const card = document.createElement('div');
       card.className = 'project-card';
       card.innerHTML = `
-        <div class="project-card__thumb">◆</div>
+        <div class="project-card__thumb">
+          <span class="project-card__glyph">◆</span>
+          <img class="project-card__thumb-img hidden" alt="" />
+        </div>
         <div class="project-card__body">
           <p class="project-card__name"></p>
           <span class="project-card__meta"></span>
         </div>
-        <button class="project-card__delete" title="Удалить">×</button>
+        <button class="project-card__settings" title="Настройки">⚙</button>
       `;
       card.querySelector('.project-card__name').textContent = p.name;
       card.querySelector('.project-card__meta').textContent =
         '#' + p.id + ' · ' + formatDate(p.updatedAt);
 
+      const img = card.querySelector('.project-card__thumb-img');
+      const glyph = card.querySelector('.project-card__glyph');
+      const url = coverUrl(p);
+      if (url) {
+        img.src = url;
+        img.classList.remove('hidden');
+        glyph.classList.add('hidden');
+        img.addEventListener('error', () => {
+          img.classList.add('hidden');
+          glyph.classList.remove('hidden');
+        });
+      }
+
       card.addEventListener('click', () => openBoard(p.id));
-      card.querySelector('.project-card__delete').addEventListener('click', async (e) => {
+      card.querySelector('.project-card__settings').addEventListener('click', (e) => {
         e.stopPropagation();
-        if (!confirm(`Удалить проект «${p.name}»?`)) return;
-        try {
-          await window.Store.deleteProject(p.id);
-          if (!unsubProjects) renderProjects();
-        } catch (err) {
-          console.error(err);
-          alert('Не удалось удалить проект: ' + err.message +
-            '\n\nПроверьте правила Firestore (Firestore → Rules).');
-        }
+        openSettings(p);
       });
 
       grid.appendChild(card);
     });
+  }
+
+  function coverUrl(p) {
+    return p && p.cover ? String(p.cover).trim() : '';
+  }
+
+  // --- Настройки проекта ---
+
+  function openSettings(p) {
+    currentSettings = p;
+    spError.classList.add('hidden');
+    spConfirm.classList.add('hidden');
+    spConfirmInput.value = '';
+    spConfirmDelete.disabled = true;
+
+    spId.value = p.id;
+    spUrl.textContent = '/' + p.id + '.html';
+    spName.value = p.name || '';
+    spCover.value = coverUrl(p);
+    updateCoverPreview();
+
+    settingsModal.classList.remove('hidden');
+    spName.focus();
+  }
+
+  function closeSettings() {
+    settingsModal.classList.add('hidden');
+    currentSettings = null;
+  }
+
+  function updateCoverPreview() {
+    const url = spCover.value.trim();
+    if (url) {
+      spCoverImg.src = url;
+      spCoverImg.classList.remove('hidden');
+      spCoverEmpty.classList.add('hidden');
+    } else {
+      spCoverImg.classList.add('hidden');
+      spCoverImg.removeAttribute('src');
+      spCoverEmpty.classList.remove('hidden');
+    }
+  }
+
+  async function saveSettings() {
+    if (!currentSettings) return;
+    const name = spName.value.trim() || currentSettings.id;
+    const cover = spCover.value.trim();
+    const btn = document.getElementById('sp-save');
+    btn.disabled = true;
+    spError.classList.add('hidden');
+    try {
+      await window.Store.updateProject(currentSettings.id, { name, cover });
+      closeSettings();
+      if (!unsubProjects) renderProjects();
+    } catch (err) {
+      console.error(err);
+      spError.textContent = 'Не удалось сохранить: ' + err.message;
+      spError.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function showDeleteConfirm() {
+    if (!currentSettings) return;
+    spConfirmId.textContent = currentSettings.id;
+    spConfirmInput.value = '';
+    spConfirmDelete.disabled = true;
+    spConfirm.classList.remove('hidden');
+    spConfirmInput.focus();
+  }
+
+  function updateDeleteConfirm() {
+    spConfirmDelete.disabled =
+      !currentSettings || spConfirmInput.value.trim() !== currentSettings.id;
+  }
+
+  async function confirmDeleteProject() {
+    if (!currentSettings) return;
+    const id = currentSettings.id;
+    if (spConfirmInput.value.trim() !== id) return;
+    spConfirmDelete.disabled = true;
+    spError.classList.add('hidden');
+    try {
+      await window.Store.deleteProject(id);
+      closeSettings();
+      if (!unsubProjects) renderProjects();
+    } catch (err) {
+      console.error(err);
+      spError.textContent = 'Не удалось удалить проект: ' + err.message +
+        '\n\nПроверьте правила Firestore (Firestore → Rules).';
+      spError.classList.remove('hidden');
+      spConfirmDelete.disabled = false;
+    }
   }
 
   function formatDate(ts) {
@@ -165,6 +283,23 @@
     modal.querySelectorAll('[data-close="modal-create"]').forEach(el =>
       el.addEventListener('click', closeCreateModal));
 
+    // Модалка настроек проекта
+    document.getElementById('sp-save').addEventListener('click', saveSettings);
+    document.getElementById('sp-cancel').addEventListener('click', closeSettings);
+    settingsModal.querySelectorAll('[data-close="modal-settings"]').forEach(el =>
+      el.addEventListener('click', closeSettings));
+    document.getElementById('sp-delete').addEventListener('click', showDeleteConfirm);
+    document.getElementById('sp-confirm-cancel').addEventListener('click', () =>
+      spConfirm.classList.add('hidden'));
+    document.getElementById('sp-confirm-delete').addEventListener('click', confirmDeleteProject);
+    spConfirmInput.addEventListener('input', updateDeleteConfirm);
+    spCover.addEventListener('input', updateCoverPreview);
+    spCoverImg.addEventListener('error', () => {
+      spCoverImg.classList.add('hidden');
+      spCoverEmpty.classList.remove('hidden');
+    });
+    spName.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveSettings(); });
+
     npId.addEventListener('input', () => {
       const caret = npId.selectionStart;
       const clean = sanitizeSlug(npId.value);
@@ -189,6 +324,7 @@
       } else {
         stopProjects();
         closeCreateModal();
+        closeSettings();
         userBadge.textContent = 'Гость';
         userBadge.title = 'Не авторизован';
         document.getElementById('btn-logout').classList.add('hidden');

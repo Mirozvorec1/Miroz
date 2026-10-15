@@ -65,6 +65,18 @@ window.__LocalStore = (function () {
     return p;
   }
 
+  async function updateProject(id, patch) {
+    const projects = read(KEY_PROJECTS, []);
+    const p = projects.find(x => x.id === id);
+    if (p) {
+      if (patch.name != null) p.name = String(patch.name).trim();
+      if (patch.cover != null) p.cover = String(patch.cover);
+      p.updatedAt = Date.now();
+      write(KEY_PROJECTS, projects);
+    }
+    return p;
+  }
+
   async function deleteProject(id) {
     write(KEY_PROJECTS, read(KEY_PROJECTS, []).filter(x => x.id !== id));
     localStorage.removeItem(KEY_NODES + id);
@@ -112,6 +124,7 @@ window.__LocalStore = (function () {
     getProject,
     createProject,
     renameProject,
+    updateProject,
     deleteProject,
     getNodes,
     addNode,

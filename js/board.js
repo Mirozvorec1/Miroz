@@ -15,6 +15,9 @@ window.Board = (function () {
   const textTimers = new Map();  // id -> таймер отложенной записи текста
   const selectedIds = new Set(); // выделенные элементы
 
+  // Блокировка: кто выделил узел — тот им и владеет (вычисляется из presence).
+  let lockState = { owners: new Map(), colorOf: new Map(), nameOf: new Map(), self: null };
+
   // Буфер обмена и история (только собственные действия)
   let clipboard = [];
   const history = [];
@@ -144,6 +147,7 @@ window.Board = (function () {
     cursorEls.forEach(el => el.remove());
     cursorEls.clear();
     presenceUsers = [];
+    lockState = { owners: new Map(), colorOf: new Map(), nameOf: new Map(), self: null };
     latestPresence = null;
     selectedIds.clear();
     history.length = 0;
@@ -221,6 +225,7 @@ window.Board = (function () {
         }
       });
     }
+    applyLockState(el, node.id);
     nodeEls.set(node.id, el);
     world.appendChild(el);
   }
@@ -278,25 +283,97 @@ window.Board = (function () {
   function selectOnly(id) {
     selectedIds.clear();
     if (id) selectedIds.add(id);
-    refreshSelection();
+    syncSelection();
   }
 
   function setSelection(ids) {
     selectedIds.clear();
     ids.forEach(id => selectedIds.add(id));
-    refreshSelection();
+    syncSelection();
   }
 
   function toggleSelection(id) {
     if (selectedIds.has(id)) selectedIds.delete(id);
     else selectedIds.add(id);
-    refreshSelection();
+    syncSelection();
   }
 
   function clearSelection() {
     if (!selectedIds.size) return;
     selectedIds.clear();
+    syncSelection();
+  }
+
+  // Применяем выделение, пересчитываем блокировки и рассылаем своё выделение.
+  function syncSelection() {
     refreshSelection();
+    recomputeLocks();
+    broadcastSelection();
+  }
+
+  // --- Блокировка: узел принадлежит тому, кто его выделил ---
+
+  function selfSession() { return (window.Presence && window.Presence.sessionId) || 'self'; }
+
+  // Владельца выбираем детерминированно (наименьший sessionId), чтобы у всех
+  // участников совпадал результат, даже если узел выделили двое.
+  function computeLocks() {
+    const owners = new Map();
+    const colorOf = new Map();
+    const nameOf = new Map();
+    const me = myIdentity();
+    const self = selfSession();
+    colorOf.set(self, colorFor(me.uid));
+    nameOf.set(self, me.name);
+
+    const claim = (id, sid) => {
+      const cur = owners.get(id);
+      if (!cur || sid < cur) owners.set(id, sid);
+    };
+    selectedIds.forEach(id => claim(id, self));
+    presenceUsers.forEach(u => {
+      if (!u || !u.sessionId) return;
+      colorOf.set(u.sessionId, u.color || colorFor(u.uid || u.sessionId));
+      nameOf.set(u.sessionId, u.name || 'Гость');
+      const sel = Array.isArray(u.sel) ? u.sel : [];
+      sel.forEach(id => claim(id, u.sessionId));
+    });
+    lockState = { owners, colorOf, nameOf, self };
+    return lockState;
+  }
+
+  function isLockedByOther(id) {
+    const o = lockState.owners.get(id);
+    return !!o && o !== lockState.self;
+  }
+
+  function applyLockState(el, id) {
+    const owner = lockState.owners.get(id);
+    const lockedByOther = !!owner && owner !== lockState.self;
+    el.classList.toggle('is-locked', lockedByOther);
+    const n = nodes.get(id);
+    const editable = n && (n.type === 'sticky' || n.type === 'text');
+    if (lockedByOther) {
+      el.style.setProperty('--lock-color', lockState.colorOf.get(owner) || '#ff5a5a');
+      el.title = 'Редактирует: ' + (lockState.nameOf.get(owner) || 'другой участник');
+      if (el.isContentEditable) el.contentEditable = 'false';
+    } else {
+      el.style.removeProperty('--lock-color');
+      el.removeAttribute('title');
+      if (editable && !el.isContentEditable) el.contentEditable = 'true';
+    }
+  }
+
+  // Возвращает true, если пришлось снять с себя чужую блокировку.
+  function recomputeLocks() {
+    computeLocks();
+    let selChanged = false;
+    selectedIds.forEach(id => {
+      if (isLockedByOther(id)) { selectedIds.delete(id); selChanged = true; }
+    });
+    nodeEls.forEach((el, id) => applyLockState(el, id));
+    if (selChanged) refreshSelection();
+    return selChanged;
   }
 
   // --- История (только собственные действия) ---
@@ -440,6 +517,8 @@ window.Board = (function () {
     }
 
     renderPresence();
+    // Чужое выделение могло измениться — пересчитываем блокировки и подсветку.
+    if (recomputeLocks()) broadcastSelection();
   }
 
   function renderPresence() {
@@ -475,28 +554,38 @@ window.Board = (function () {
     return { uid: me.uid, name: me.name, color: colorFor(me.uid) };
   }
 
+  // Единый payload присутствия: профиль + последняя позиция курсора + выделение.
+  function presencePayload(extra) {
+    const base = latestPresence || {};
+    const payload = { ...myProfile(), sel: [...selectedIds], updatedAt: Date.now() };
+    if (base.x != null) payload.x = base.x;
+    if (base.y != null) payload.y = base.y;
+    return Object.assign(payload, extra || {});
+  }
+
   function sendJoinPresence() {
-    latestPresence = { ...myProfile(), updatedAt: Date.now() };
+    latestPresence = presencePayload();
     window.Presence.update(projectId, latestPresence);
   }
 
   function sendHeartbeat() {
     if (!projectId) return;
     if (!latestPresence) { sendJoinPresence(); return; }
-    latestPresence.updatedAt = Date.now();
+    latestPresence = presencePayload();
+    window.Presence.update(projectId, latestPresence);
+  }
+
+  // Мгновенно рассылаем своё выделение (для чужой подсветки и блокировки).
+  function broadcastSelection() {
+    if (!projectId || !window.Presence.enabled()) return;
+    latestPresence = presencePayload();
     window.Presence.update(projectId, latestPresence);
   }
 
   function onCursorMove(e) {
     if (!projectId || !window.Presence.enabled()) return;
-    const me = myIdentity();
     const p = screenToWorld(e.clientX, e.clientY);
-    latestPresence = {
-      ...myProfile(),
-      x: Math.round(p.x),
-      y: Math.round(p.y),
-      updatedAt: Date.now()
-    };
+    latestPresence = presencePayload({ x: Math.round(p.x), y: Math.round(p.y) });
     const now = Date.now();
     if (now - lastPresenceSent >= 70) {
       sendPresence();
@@ -599,10 +688,11 @@ window.Board = (function () {
 
     const nodeEl = e.target.closest('.canvas-node');
     if (nodeEl) {
+      const id = nodeEl.dataset.id;
+      if (isLockedByOther(id)) return;            // занят другим участником
       if (document.activeElement === nodeEl) return; // идёт редактирование
       e.preventDefault();
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-      const id = nodeEl.dataset.id;
       if (e.shiftKey) { toggleSelection(id); return; }
       if (!selectedIds.has(id)) selectOnly(id);
       startDragGroup(e);
@@ -667,6 +757,7 @@ window.Board = (function () {
     nodes.forEach(n => {
       const el = nodeEls.get(n.id);
       if (!el) return;
+      if (isLockedByOther(n.id)) return;
       const bx2 = n.x + (el.offsetWidth || 0);
       const by2 = n.y + (el.offsetHeight || 0);
       if (r.x < bx2 && r.x2 > n.x && r.y < by2 && r.y2 > n.y) ids.push(n.id);
@@ -677,7 +768,7 @@ window.Board = (function () {
 
   function onDblClick(e) {
     const el = e.target.closest('.canvas-node');
-    if (el && el.isContentEditable) el.focus();
+    if (el && el.isContentEditable && !isLockedByOther(el.dataset.id)) el.focus();
   }
 
   function startPan(e) {
@@ -785,7 +876,9 @@ window.Board = (function () {
     if (ctrl && (e.key === 'x' || e.key === 'X' || e.key === 'ч' || e.key === 'Ч')) { cutSelected(); return; }
     if (ctrl && (e.key === 'v' || e.key === 'V' || e.key === 'м' || e.key === 'М')) { pasteClipboard(); return; }
     if (ctrl && (e.key === 'a' || e.key === 'A' || e.key === 'ф' || e.key === 'Ф')) {
-      e.preventDefault(); setSelection([...nodes.keys()]); return;
+      e.preventDefault();
+      setSelection([...nodes.keys()].filter(id => !isLockedByOther(id)));
+      return;
     }
     if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); return; }
     if (e.key === 'Escape') { clearSelection(); return; }
