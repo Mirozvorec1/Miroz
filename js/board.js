@@ -15,13 +15,14 @@ window.Board = (function () {
   const textTimers = new Map();  // id -> таймер отложенной записи текста
 
   // Присутствие
-  const cursorEls = new Map();   // uid -> DOM-элемент курсора
+  const cursorEls = new Map();   // sessionId -> DOM-элемент курсора
   let presenceUsers = [];
   let presenceUnsub = null;
-  let presencePruneTimer = null;
   let presenceTrailTimer = null;
   let lastPresenceSent = 0;
   let latestPresence = null;
+  let cursorRaf = null;
+  let heartbeatTimer = null;
 
   const MIN_SCALE = 0.2;
   const MAX_SCALE = 4;
@@ -34,8 +35,10 @@ window.Board = (function () {
   let dragNode = null;
   let viewTimer = null;
   let warnedPermission = false;
+  let dragSaveTimer = null;
+  let dragSavePending = null;
 
-  const PRESENCE_TTL = 15000; // мс: после этого курсор считается «пропавшим»
+  const HEARTBEAT_MS = 25000; // держим присутствие живым (даже в фоновой вкладке)
 
   // Показываем ошибку синхронизации один раз, чтобы не спамить.
   function handleError(err) {
@@ -65,7 +68,6 @@ window.Board = (function () {
     if (grid) grid.style.backgroundSize = `${24 * view.scale}px ${24 * view.scale}px`;
     const zv = document.getElementById('zoom-value');
     if (zv) zv.textContent = Math.round(view.scale * 100) + '%';
-    updateCursorPositions();
   }
 
   function scheduleViewSave() {
@@ -116,14 +118,18 @@ window.Board = (function () {
 
     presenceUsers = [];
     presenceUnsub = window.Presence.subscribe(pid, renderCursors, handleError);
-    presencePruneTimer = setInterval(() => renderCursors(presenceUsers), 5000);
+    sendJoinPresence();
+    heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
+    startCursorLoop();
   }
 
   function unload() {
     if (unsubscribe) { unsubscribe(); unsubscribe = null; }
     if (presenceUnsub) { presenceUnsub(); presenceUnsub = null; }
-    if (presencePruneTimer) { clearInterval(presencePruneTimer); presencePruneTimer = null; }
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     if (presenceTrailTimer) { clearTimeout(presenceTrailTimer); presenceTrailTimer = null; }
+    if (cursorRaf) { cancelAnimationFrame(cursorRaf); cursorRaf = null; }
+    if (dragSaveTimer) { clearTimeout(dragSaveTimer); dragSaveTimer = null; }
     if (projectId) window.Presence.leave(projectId);
     cursorEls.forEach(el => el.remove());
     cursorEls.clear();
@@ -253,27 +259,39 @@ window.Board = (function () {
     return el;
   }
 
-  function positionCursor(el, wx, wy) {
-    el.dataset.wx = wx;
-    el.dataset.wy = wy;
-    const p = worldToScreen(wx, wy);
-    el.style.transform = `translate(${p.x}px, ${p.y}px)`;
-  }
-
-  function updateCursorPositions() {
-    cursorEls.forEach(el => positionCursor(el, Number(el.dataset.wx), Number(el.dataset.wy)));
+  // Плавное движение: интерполируем позицию к цели в requestAnimationFrame,
+  // поэтому сетевые задержки/пакеты не дают тряски.
+  function startCursorLoop() {
+    if (cursorRaf) return;
+    const frame = () => {
+      cursorEls.forEach(el => {
+        const tx = Number(el.dataset.tx);
+        const ty = Number(el.dataset.ty);
+        if (!isFinite(tx) || !isFinite(ty)) return;
+        let cx = Number(el.dataset.cx);
+        let cy = Number(el.dataset.cy);
+        if (!isFinite(cx) || !isFinite(cy)) { cx = tx; cy = ty; }
+        cx += (tx - cx) * 0.3;
+        cy += (ty - cy) * 0.3;
+        el.dataset.cx = cx;
+        el.dataset.cy = cy;
+        const p = worldToScreen(cx, cy);
+        el.style.transform = `translate(${p.x}px, ${p.y}px)`;
+      });
+      cursorRaf = requestAnimationFrame(frame);
+    };
+    cursorRaf = requestAnimationFrame(frame);
   }
 
   function renderCursors(users) {
     presenceUsers = Array.isArray(users) ? users : [];
     const layer = document.getElementById('cursors');
-    const now = Date.now();
     const alive = new Set();
 
     if (layer) {
       presenceUsers.forEach(u => {
-        if (!u || !u.sessionId) return;                        // себя Presence уже отфильтровал
-        if (now - (u.updatedAt || 0) > PRESENCE_TTL) return;  // устаревшие скрываем
+        if (!u || !u.sessionId) return;          // себя Presence уже отфильтровал
+        if (u.x == null || u.y == null) return;  // ещё не двигал курсором
         alive.add(u.sessionId);
 
         let el = cursorEls.get(u.sessionId);
@@ -286,7 +304,9 @@ window.Board = (function () {
         if (el._color !== color) { el._color = color; el.style.setProperty('--c', color); }
         const name = u.name || 'Гость';
         if (el._name !== name) { el._name = name; el.querySelector('.cursor__name').textContent = name; }
-        positionCursor(el, Number(u.x) || 0, Number(u.y) || 0);
+
+        el.dataset.tx = Number(u.x);
+        el.dataset.ty = Number(u.y);
       });
 
       cursorEls.forEach((el, sid) => {
@@ -301,13 +321,12 @@ window.Board = (function () {
     const pres = document.getElementById('presence');
     if (!pres) return;
     const me = myIdentity();
-    const now = Date.now();
     const people = [];
     const seen = new Set();
 
+    // Все активные сессии присутствуют, пока соединение живо (RTDB onDisconnect).
     presenceUsers.forEach(u => {
       if (!u || !u.uid || seen.has(u.uid)) return;
-      if (now - (u.updatedAt || 0) > PRESENCE_TTL) return;
       seen.add(u.uid);
       people.push(u);
     });
@@ -326,26 +345,41 @@ window.Board = (function () {
 
   // --- Отправка своей позиции курсора ---
 
+  function myProfile() {
+    const me = myIdentity();
+    return { uid: me.uid, name: me.name, color: colorFor(me.uid) };
+  }
+
+  function sendJoinPresence() {
+    latestPresence = { ...myProfile(), updatedAt: Date.now() };
+    window.Presence.update(projectId, latestPresence);
+  }
+
+  function sendHeartbeat() {
+    if (!projectId) return;
+    if (!latestPresence) { sendJoinPresence(); return; }
+    latestPresence.updatedAt = Date.now();
+    window.Presence.update(projectId, latestPresence);
+  }
+
   function onCursorMove(e) {
     if (!projectId || !window.Presence.enabled()) return;
     const me = myIdentity();
     const p = screenToWorld(e.clientX, e.clientY);
     latestPresence = {
-      uid: me.uid,
-      name: me.name,
-      color: colorFor(me.uid),
+      ...myProfile(),
       x: Math.round(p.x),
       y: Math.round(p.y),
       updatedAt: Date.now()
     };
     const now = Date.now();
-    if (now - lastPresenceSent >= 90) {
+    if (now - lastPresenceSent >= 70) {
       sendPresence();
     } else if (!presenceTrailTimer) {
       presenceTrailTimer = setTimeout(() => {
         presenceTrailTimer = null;
         sendPresence();
-      }, 90 - (now - lastPresenceSent));
+      }, 70 - (now - lastPresenceSent));
     }
   }
 
@@ -370,6 +404,13 @@ window.Board = (function () {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('beforeunload', onBeforeUnload);
+
+    // Отключаем контекстное меню браузера (в т.ч. Яндекс) на холсте и элементах,
+    // но оставляем его в полях ввода (заголовок, текстовые элементы).
+    document.addEventListener('contextmenu', (e) => {
+      if (e.target.closest('input, textarea')) return;
+      e.preventDefault();
+    });
 
     document.querySelectorAll('.tool').forEach(btn => {
       btn.addEventListener('click', () => setTool(btn.dataset.tool));
@@ -466,6 +507,27 @@ window.Board = (function () {
       dragNode.node.y = dragNode.oy + (e.clientY - dragNode.startY) / view.scale;
       dragNode.el.style.left = dragNode.node.x + 'px';
       dragNode.el.style.top = dragNode.node.y + 'px';
+      queueLiveMove(dragNode.node);
+    }
+  }
+
+  // Другие пользователи видят перемещение элемента в реальном времени.
+  function queueLiveMove(node) {
+    dragSavePending = node;
+    if (dragSaveTimer) return;
+    flushLiveMove();
+    dragSaveTimer = setTimeout(() => {
+      dragSaveTimer = null;
+      if (dragSavePending) flushLiveMove();
+    }, 40);
+  }
+
+  function flushLiveMove() {
+    const node = dragSavePending;
+    dragSavePending = null;
+    if (node && projectId) {
+      window.Store.updateNode(projectId, node.id, { x: Math.round(node.x), y: Math.round(node.y) })
+        .catch(handleError);
     }
   }
 
@@ -473,6 +535,8 @@ window.Board = (function () {
     if (panning) { panning = false; scheduleViewSave(); }
     if (dragNode) {
       const { node, el } = dragNode;
+      if (dragSaveTimer) { clearTimeout(dragSaveTimer); dragSaveTimer = null; }
+      dragSavePending = null;
       node.x = Math.round(node.x);
       node.y = Math.round(node.y);
       el.style.left = node.x + 'px';

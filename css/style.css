@@ -347,7 +347,6 @@ html, body {
   left: 0;
   pointer-events: none;
   will-change: transform;
-  transition: transform .09s linear;
 }
 .cursor__svg { display: block; }
 .cursor__svg path {
