@@ -16,10 +16,14 @@
 
     window.Board.init();
 
-    document.getElementById('btn-back').addEventListener('click', (e) => {
-      e.preventDefault();
-      location.href = 'index.html';
+    // Выпадающее меню (☰) с пунктом "В меню".
+    const menuBtn = document.getElementById('btn-menu');
+    const menu = document.getElementById('board-menu');
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      menu.classList.toggle('hidden');
     });
+    document.addEventListener('click', () => menu.classList.add('hidden'));
 
     titleInput.addEventListener('change', async () => {
       const name = titleInput.value.trim() || projectId;

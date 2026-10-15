@@ -10,7 +10,12 @@
 
   <section id="screen-board" class="screen is-active">
     <header class="board-bar">
-      <a id="btn-back" class="btn btn--ghost" href="index.html" title="К списку проектов">← Проекты</a>
+      <div class="board-menu">
+        <button id="btn-menu" class="btn btn--ghost board-menu-btn" title="Меню">☰</button>
+        <div id="board-menu" class="dropdown hidden">
+          <a class="dropdown__item" href="index.html">В меню</a>
+        </div>
+      </div>
       <input id="board-title" class="board-title" value="Проект" spellcheck="false" />
       <span id="board-slug" class="board-slug"></span>
       <div class="board-bar__spacer"></div>
@@ -37,7 +42,8 @@
         <div class="canvas-grid"></div>
       </div>
       <div id="cursors" class="cursors-layer"></div>
-      <div id="canvas-hint" class="canvas-hint">Выберите инструмент и нажмите на холст</div>
+      <div id="marquee" class="marquee hidden"></div>
+      <div id="canvas-hint" class="canvas-hint">Выберите инструмент и нажмите на холст. ПКМ — рамка выделения</div>
     </div>
   </section>
 

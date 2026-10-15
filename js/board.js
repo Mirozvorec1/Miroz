@@ -13,6 +13,12 @@ window.Board = (function () {
   const nodeEls = new Map();    // id -> DOM-элемент
   const draggingIds = new Set(); // узлы, которые сейчас тащим локально
   const textTimers = new Map();  // id -> таймер отложенной записи текста
+  const selectedIds = new Set(); // выделенные элементы
+
+  // Буфер обмена и история (только собственные действия)
+  let clipboard = [];
+  const history = [];
+  let historyLock = false;
 
   // Присутствие
   const cursorEls = new Map();   // sessionId -> DOM-элемент курсора
@@ -32,7 +38,8 @@ window.Board = (function () {
   let spaceDown = false;
   let panning = false;
   let panStart = null;
-  let dragNode = null;
+  let dragGroup = null;   // { startX, startY, items:[{node, el, ox, oy}] }
+  let marquee = null;     // { start, rect, el, base }
   let viewTimer = null;
   let warnedPermission = false;
   let dragSaveTimer = null;
@@ -93,6 +100,9 @@ window.Board = (function () {
     projectId = pid;
     nodes.clear();
     nodeEls.clear();
+    selectedIds.clear();
+    history.length = 0;
+    clipboard = [];
     world.querySelectorAll('.canvas-node').forEach(n => n.remove());
 
     const v = await window.Store.getView(pid);
@@ -135,6 +145,10 @@ window.Board = (function () {
     cursorEls.clear();
     presenceUsers = [];
     latestPresence = null;
+    selectedIds.clear();
+    history.length = 0;
+    dragGroup = null;
+    marquee = null;
     projectId = null;
   }
 
@@ -172,6 +186,7 @@ window.Board = (function () {
     if (el) el.remove();
     nodeEls.delete(id);
     nodes.delete(id);
+    selectedIds.delete(id);
   }
 
   function renderNode(node) {
@@ -181,12 +196,29 @@ window.Board = (function () {
     el.style.left = node.x + 'px';
     el.style.top = node.y + 'px';
     el.textContent = node.text || '';
+    if (selectedIds.has(node.id)) el.classList.add('is-selected');
 
     if (node.type === 'sticky' || node.type === 'text') {
       el.contentEditable = 'true';
       el.addEventListener('input', () => {
         node.text = el.textContent;
         scheduleTextSave(node.id);
+      });
+      // История правки текста: фиксируем значение до и после редактирования.
+      el.addEventListener('focus', () => { el._textBefore = node.text || ''; });
+      el.addEventListener('blur', () => {
+        if (el._textBefore !== undefined && el._textBefore !== node.text) {
+          const before = el._textBefore;
+          const after = node.text || '';
+          el._textBefore = undefined;
+          pushHistory({ undo: () => {
+            const n = nodes.get(node.id);
+            const nodeEl = nodeEls.get(node.id);
+            if (n) n.text = before;
+            if (nodeEl) nodeEl.textContent = before;
+            if (projectId) window.Store.updateNode(projectId, node.id, { text: before }).catch(handleError);
+          } });
+        }
       });
     }
     nodeEls.set(node.id, el);
@@ -202,7 +234,26 @@ window.Board = (function () {
     }, 500));
   }
 
-  // --- Создание элементов ---
+  // --- Создание / размещение элементов ---
+
+  function placeNode(node, focus) {
+    nodes.set(node.id, node);
+    renderNode(node);
+    if (projectId) window.Store.addNode(projectId, node).catch(handleError);
+    if (focus) {
+      const el = nodeEls.get(node.id);
+      if (el) {
+        el.focus();
+        const sel = document.getSelection();
+        if (sel) sel.selectAllChildren(el);
+      }
+    }
+  }
+
+  function removeLocalAndRemote(id) {
+    removeNodeById(id);
+    if (projectId) window.Store.removeNode(projectId, id).catch(handleError);
+  }
 
   function addNode(type, x, y) {
     const user = window.currentUser;
@@ -214,18 +265,92 @@ window.Board = (function () {
       text: type === 'frame' ? '' : (type === 'text' ? 'Текст' : 'Стикер'),
       createdBy: user ? user.uid : 'anon'
     };
-    nodes.set(node.id, node);
-    renderNode(node);
-    window.Store.addNode(projectId, node).catch(handleError);
+    placeNode(node, type !== 'frame');
+    pushHistory({ undo: () => removeLocalAndRemote(node.id) });
+  }
 
-    if (type !== 'frame') {
-      const el = nodeEls.get(node.id);
-      if (el) {
-        el.focus();
-        const sel = document.getSelection();
-        if (sel) sel.selectAllChildren(el);
-      }
-    }
+  // --- Выделение ---
+
+  function refreshSelection() {
+    nodeEls.forEach((el, id) => el.classList.toggle('is-selected', selectedIds.has(id)));
+  }
+
+  function selectOnly(id) {
+    selectedIds.clear();
+    if (id) selectedIds.add(id);
+    refreshSelection();
+  }
+
+  function setSelection(ids) {
+    selectedIds.clear();
+    ids.forEach(id => selectedIds.add(id));
+    refreshSelection();
+  }
+
+  function toggleSelection(id) {
+    if (selectedIds.has(id)) selectedIds.delete(id);
+    else selectedIds.add(id);
+    refreshSelection();
+  }
+
+  function clearSelection() {
+    if (!selectedIds.size) return;
+    selectedIds.clear();
+    refreshSelection();
+  }
+
+  // --- История (только собственные действия) ---
+
+  function pushHistory(entry) {
+    if (historyLock) return;
+    history.push(entry);
+    if (history.length > 200) history.shift();
+  }
+
+  function undo() {
+    if (!history.length) return;
+    const entry = history.pop();
+    historyLock = true;
+    try { entry.undo(); } catch (e) { console.error('[undo]', e); }
+    historyLock = false;
+  }
+
+  // --- Буфер обмена ---
+
+  function snapshot(node) {
+    return { id: node.id, type: node.type, x: node.x, y: node.y, text: node.text || '', createdBy: node.createdBy };
+  }
+
+  function copySelected() {
+    clipboard = [...selectedIds].map(id => nodes.get(id)).filter(Boolean).map(snapshot);
+  }
+
+  function cutSelected() {
+    if (!selectedIds.size) return;
+    copySelected();
+    deleteSelected();
+  }
+
+  function pasteClipboard() {
+    if (!clipboard.length) return;
+    const created = clipboard.map(s => ({ ...s, id: window.Store.uid(), x: s.x + 24, y: s.y + 24 }));
+    created.forEach(n => placeNode(n, false));
+    setSelection(created.map(n => n.id));
+    pushHistory({ undo: () => created.forEach(n => removeLocalAndRemote(n.id)) });
+  }
+
+  function deleteSelected() {
+    if (!selectedIds.size) return;
+    const snaps = [];
+    selectedIds.forEach(id => { const n = nodes.get(id); if (n) snaps.push(snapshot(n)); });
+    if (!snaps.length) return;
+    historyLock = true;
+    snaps.forEach(s => removeLocalAndRemote(s.id));
+    historyLock = false;
+    clearSelection();
+    pushHistory({
+      undo: () => { snaps.forEach(s => placeNode({ ...s }, false)); setSelection(snaps.map(s => s.id)); }
+    });
   }
 
   // --- Присутствие: чужие курсоры и онлайн-аватарки ---
@@ -461,6 +586,7 @@ window.Board = (function () {
   }
 
   function onMouseDown(e) {
+    if (e.button === 2 && !isEditing()) { startMarquee(e); return; }
     if (e.button === 1 || spaceDown) { startPan(e); return; }
     if (e.button !== 0) return;
 
@@ -476,13 +602,77 @@ window.Board = (function () {
       if (document.activeElement === nodeEl) return; // идёт редактирование
       e.preventDefault();
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-      const node = nodes.get(nodeEl.dataset.id);
-      if (!node) return;
-      draggingIds.add(node.id);
-      dragNode = { node, el: nodeEl, startX: e.clientX, startY: e.clientY, ox: node.x, oy: node.y };
+      const id = nodeEl.dataset.id;
+      if (e.shiftKey) { toggleSelection(id); return; }
+      if (!selectedIds.has(id)) selectOnly(id);
+      startDragGroup(e);
       return;
     }
+
+    clearSelection();
     startPan(e);
+  }
+
+  function startDragGroup(e) {
+    const items = [];
+    selectedIds.forEach(id => {
+      const node = nodes.get(id);
+      const el = nodeEls.get(id);
+      if (node && el) { items.push({ node, el, ox: node.x, oy: node.y }); draggingIds.add(id); }
+    });
+    if (!items.length) return;
+    dragGroup = { startX: e.clientX, startY: e.clientY, items };
+  }
+
+  // --- Рамка выделения (ПКМ) ---
+
+  function startMarquee(e) {
+    e.preventDefault();
+    const p = screenToWorld(e.clientX, e.clientY);
+    const base = (e.ctrlKey || e.metaKey || e.shiftKey) ? [...selectedIds] : [];
+    marquee = {
+      start: p,
+      rect: { x: p.x, y: p.y, x2: p.x, y2: p.y },
+      base,
+      el: document.getElementById('marquee')
+    };
+    if (marquee.el) marquee.el.classList.remove('hidden');
+    updateMarquee(e);
+  }
+
+  function updateMarquee(e) {
+    if (!marquee) return;
+    const p = screenToWorld(e.clientX, e.clientY);
+    const x = Math.min(marquee.start.x, p.x);
+    const y = Math.min(marquee.start.y, p.y);
+    const x2 = Math.max(marquee.start.x, p.x);
+    const y2 = Math.max(marquee.start.y, p.y);
+    marquee.rect = { x, y, x2, y2 };
+    const a = worldToScreen(x, y);
+    const b = worldToScreen(x2, y2);
+    const el = marquee.el;
+    if (el) {
+      el.style.left = a.x + 'px';
+      el.style.top = a.y + 'px';
+      el.style.width = (b.x - a.x) + 'px';
+      el.style.height = (b.y - a.y) + 'px';
+    }
+  }
+
+  function endMarquee() {
+    if (!marquee) return;
+    if (marquee.el) marquee.el.classList.add('hidden');
+    const r = marquee.rect;
+    const ids = [...marquee.base];
+    nodes.forEach(n => {
+      const el = nodeEls.get(n.id);
+      if (!el) return;
+      const bx2 = n.x + (el.offsetWidth || 0);
+      const by2 = n.y + (el.offsetHeight || 0);
+      if (r.x < bx2 && r.x2 > n.x && r.y < by2 && r.y2 > n.y) ids.push(n.id);
+    });
+    setSelection(ids);
+    marquee = null;
   }
 
   function onDblClick(e) {
@@ -496,24 +686,29 @@ window.Board = (function () {
   }
 
   function onMouseMove(e) {
+    if (marquee) { updateMarquee(e); return; }
     if (panning) {
       view.x = panStart.vx + (e.clientX - panStart.x);
       view.y = panStart.vy + (e.clientY - panStart.y);
       applyView();
       return;
     }
-    if (dragNode) {
-      dragNode.node.x = dragNode.ox + (e.clientX - dragNode.startX) / view.scale;
-      dragNode.node.y = dragNode.oy + (e.clientY - dragNode.startY) / view.scale;
-      dragNode.el.style.left = dragNode.node.x + 'px';
-      dragNode.el.style.top = dragNode.node.y + 'px';
-      queueLiveMove(dragNode.node);
+    if (dragGroup) {
+      const dx = (e.clientX - dragGroup.startX) / view.scale;
+      const dy = (e.clientY - dragGroup.startY) / view.scale;
+      dragGroup.items.forEach(it => {
+        it.node.x = it.ox + dx;
+        it.node.y = it.oy + dy;
+        it.el.style.left = it.node.x + 'px';
+        it.el.style.top = it.node.y + 'px';
+      });
+      queueLiveMove(dragGroup.items.map(it => it.node));
     }
   }
 
-  // Другие пользователи видят перемещение элемента в реальном времени.
-  function queueLiveMove(node) {
-    dragSavePending = node;
+  // Другие пользователи видят перемещение элементов в реальном времени.
+  function queueLiveMove(nodeList) {
+    dragSavePending = nodeList;
     if (dragSaveTimer) return;
     flushLiveMove();
     dragSaveTimer = setTimeout(() => {
@@ -523,28 +718,55 @@ window.Board = (function () {
   }
 
   function flushLiveMove() {
-    const node = dragSavePending;
+    const list = dragSavePending;
     dragSavePending = null;
-    if (node && projectId) {
+    if (!list || !projectId) return;
+    list.forEach(node => {
       window.Store.updateNode(projectId, node.id, { x: Math.round(node.x), y: Math.round(node.y) })
         .catch(handleError);
-    }
+    });
   }
 
   function onMouseUp() {
+    if (marquee) { endMarquee(); return; }
     if (panning) { panning = false; scheduleViewSave(); }
-    if (dragNode) {
-      const { node, el } = dragNode;
-      if (dragSaveTimer) { clearTimeout(dragSaveTimer); dragSaveTimer = null; }
-      dragSavePending = null;
-      node.x = Math.round(node.x);
-      node.y = Math.round(node.y);
-      el.style.left = node.x + 'px';
-      el.style.top = node.y + 'px';
-      draggingIds.delete(node.id);
-      window.Store.updateNode(projectId, node.id, { x: node.x, y: node.y })
-        .catch(handleError);
-      dragNode = null;
+    if (dragGroup) { endDragGroup(); }
+  }
+
+  function endDragGroup() {
+    const items = dragGroup.items;
+    if (dragSaveTimer) { clearTimeout(dragSaveTimer); dragSaveTimer = null; }
+    dragSavePending = null;
+
+    const moves = [];
+    items.forEach(it => {
+      const ox = Math.round(it.ox);
+      const oy = Math.round(it.oy);
+      it.node.x = Math.round(it.node.x);
+      it.node.y = Math.round(it.node.y);
+      it.el.style.left = it.node.x + 'px';
+      it.el.style.top = it.node.y + 'px';
+      draggingIds.delete(it.node.id);
+      if (projectId) {
+        window.Store.updateNode(projectId, it.node.id, { x: it.node.x, y: it.node.y }).catch(handleError);
+      }
+      if (ox !== it.node.x || oy !== it.node.y) {
+        moves.push({ id: it.node.id, x: it.node.x, y: it.node.y, ox, oy });
+      }
+    });
+    dragGroup = null;
+
+    if (moves.length) {
+      pushHistory({
+        undo: () => moves.forEach(m => {
+          const n = nodes.get(m.id);
+          if (!n) return;
+          n.x = m.ox; n.y = m.oy;
+          const el = nodeEls.get(m.id);
+          if (el) { el.style.left = m.ox + 'px'; el.style.top = m.oy + 'px'; }
+          if (projectId) window.Store.updateNode(projectId, m.id, { x: m.ox, y: m.oy }).catch(() => {});
+        })
+      });
     }
   }
 
@@ -554,6 +776,20 @@ window.Board = (function () {
       viewport.style.cursor = 'grab';
     }
     if (isEditing()) return;
+
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (ctrl && (e.key === 'z' || e.key === 'Z' || e.key === 'я' || e.key === 'Я')) {
+      e.preventDefault(); undo(); return;
+    }
+    if (ctrl && (e.key === 'c' || e.key === 'C' || e.key === 'с' || e.key === 'С')) { copySelected(); return; }
+    if (ctrl && (e.key === 'x' || e.key === 'X' || e.key === 'ч' || e.key === 'Ч')) { cutSelected(); return; }
+    if (ctrl && (e.key === 'v' || e.key === 'V' || e.key === 'м' || e.key === 'М')) { pasteClipboard(); return; }
+    if (ctrl && (e.key === 'a' || e.key === 'A' || e.key === 'ф' || e.key === 'Ф')) {
+      e.preventDefault(); setSelection([...nodes.keys()]); return;
+    }
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); return; }
+    if (e.key === 'Escape') { clearSelection(); return; }
+
     if (e.key === 'v' || e.key === '1') setTool('select');
     if (e.key === 'n' || e.key === 's' || e.key === '2') setTool('sticky');
     if (e.key === 't' || e.key === '3') setTool('text');

@@ -285,6 +285,10 @@ html, body {
   position: absolute;
   border-radius: 6px;
 }
+.canvas-node.is-selected {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
 .canvas-node--sticky {
   width: 160px;
   min-height: 120px;
@@ -323,6 +327,15 @@ html, body {
   pointer-events: none;
 }
 
+.marquee {
+  position: absolute;
+  border: 1.5px solid var(--primary);
+  background: rgba(66, 98, 255, .12);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 6;
+}
+
 .board-slug {
   font-size: 12px;
   color: var(--text-soft);
@@ -332,6 +345,31 @@ html, body {
   border-radius: 6px;
   white-space: nowrap;
 }
+
+/* Выпадающее меню доски */
+.board-menu { position: relative; }
+.board-menu-btn { font-size: 18px; line-height: 1; padding: 6px 12px; }
+.dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 180px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 50;
+}
+.dropdown__item {
+  display: block;
+  padding: 9px 12px;
+  border-radius: 7px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 14px;
+}
+.dropdown__item:hover { background: var(--bg-soft); }
 
 /* ---------- Курсоры других пользователей ---------- */
 .cursors-layer {
