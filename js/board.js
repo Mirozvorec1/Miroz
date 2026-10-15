@@ -14,6 +14,15 @@ window.Board = (function () {
   const draggingIds = new Set(); // узлы, которые сейчас тащим локально
   const textTimers = new Map();  // id -> таймер отложенной записи текста
 
+  // Присутствие
+  const cursorEls = new Map();   // uid -> DOM-элемент курсора
+  let presenceUsers = [];
+  let presenceUnsub = null;
+  let presencePruneTimer = null;
+  let presenceTrailTimer = null;
+  let lastPresenceSent = 0;
+  let latestPresence = null;
+
   const MIN_SCALE = 0.2;
   const MAX_SCALE = 4;
   const view = { x: 0, y: 0, scale: 1 };
@@ -26,6 +35,8 @@ window.Board = (function () {
   let viewTimer = null;
   let warnedPermission = false;
 
+  const PRESENCE_TTL = 15000; // мс: после этого курсор считается «пропавшим»
+
   // Показываем ошибку синхронизации один раз, чтобы не спамить.
   function handleError(err) {
     console.error('[board]', err);
@@ -34,7 +45,7 @@ window.Board = (function () {
     const msg = String((err && err.message) || err);
     if (/permission|insufficient|missing/i.test(msg)) {
       alert('Нет доступа к базе Firestore.\n\nОпубликуйте правила: Firestore → Rules. ' +
-        'Вложенная коллекция projects/{id}/nodes должна быть разрешена.');
+        'Коллекции projects/{id}/nodes и projects/{id}/presence должны быть разрешены.');
     } else {
       alert('Ошибка синхронизации доски: ' + msg);
     }
@@ -54,6 +65,7 @@ window.Board = (function () {
     if (grid) grid.style.backgroundSize = `${24 * view.scale}px ${24 * view.scale}px`;
     const zv = document.getElementById('zoom-value');
     if (zv) zv.textContent = Math.round(view.scale * 100) + '%';
+    updateCursorPositions();
   }
 
   function scheduleViewSave() {
@@ -101,10 +113,24 @@ window.Board = (function () {
       onRemove: removeNodeById,
       onError: handleError
     });
+
+    presenceUsers = [];
+    presenceUnsub = window.Store.subscribePresence(pid, renderCursors, handleError);
+    presencePruneTimer = setInterval(() => renderCursors(presenceUsers), 5000);
   }
 
   function unload() {
     if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    if (presenceUnsub) { presenceUnsub(); presenceUnsub = null; }
+    if (presencePruneTimer) { clearInterval(presencePruneTimer); presencePruneTimer = null; }
+    if (presenceTrailTimer) { clearTimeout(presenceTrailTimer); presenceTrailTimer = null; }
+    if (projectId && window.Store.clearPresence) {
+      window.Store.clearPresence(projectId).catch(() => {});
+    }
+    cursorEls.forEach(el => el.remove());
+    cursorEls.clear();
+    presenceUsers = [];
+    latestPresence = null;
     projectId = null;
   }
 
@@ -198,26 +224,140 @@ window.Board = (function () {
     }
   }
 
-  // --- Присутствие (пока показываем только себя) ---
+  // --- Присутствие: чужие курсоры и онлайн-аватарки ---
+
+  function myIdentity() {
+    const u = window.currentUser;
+    return {
+      uid: (u && u.uid) || 'anon',
+      name: (u && (u.displayName || u.email)) || 'Гость'
+    };
+  }
+
+  function colorFor(id) {
+    let h = 0;
+    const s = String(id);
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+    return `hsl(${h}, 70%, 45%)`;
+  }
+
+  function worldToScreen(x, y) {
+    return { x: x * view.scale + view.x, y: y * view.scale + view.y };
+  }
+
+  function createCursorEl() {
+    const el = document.createElement('div');
+    el.className = 'cursor';
+    el.innerHTML =
+      '<svg class="cursor__svg" width="22" height="24" viewBox="0 0 22 24">' +
+      '<path d="M2 1 L2 20 L7.5 15 L11 22.5 L14.5 20.5 L11 13.5 L18.5 13.5 Z"/>' +
+      '</svg><span class="cursor__name"></span>';
+    return el;
+  }
+
+  function positionCursor(el, wx, wy) {
+    el.dataset.wx = wx;
+    el.dataset.wy = wy;
+    const p = worldToScreen(wx, wy);
+    el.style.transform = `translate(${p.x}px, ${p.y}px)`;
+  }
+
+  function updateCursorPositions() {
+    cursorEls.forEach(el => positionCursor(el, Number(el.dataset.wx), Number(el.dataset.wy)));
+  }
+
+  function renderCursors(users) {
+    presenceUsers = Array.isArray(users) ? users : [];
+    const layer = document.getElementById('cursors');
+    const me = myIdentity();
+    const now = Date.now();
+    const alive = new Set();
+
+    if (layer) {
+      presenceUsers.forEach(u => {
+        if (!u || !u.uid || u.uid === me.uid) return;        // себя не рисуем
+        if (now - (u.updatedAt || 0) > PRESENCE_TTL) return;  // устаревшие скрываем
+        alive.add(u.uid);
+
+        let el = cursorEls.get(u.uid);
+        if (!el) {
+          el = createCursorEl();
+          cursorEls.set(u.uid, el);
+          layer.appendChild(el);
+        }
+        const color = u.color || colorFor(u.uid);
+        if (el._color !== color) { el._color = color; el.style.setProperty('--c', color); }
+        const name = u.name || 'Гость';
+        if (el._name !== name) { el._name = name; el.querySelector('.cursor__name').textContent = name; }
+        positionCursor(el, Number(u.x) || 0, Number(u.y) || 0);
+      });
+
+      cursorEls.forEach((el, uid) => {
+        if (!alive.has(uid)) { el.remove(); cursorEls.delete(uid); }
+      });
+    }
+
+    renderPresence();
+  }
 
   function renderPresence() {
     const pres = document.getElementById('presence');
     if (!pres) return;
+    const me = myIdentity();
+    const now = Date.now();
+    const people = [];
+    const seen = new Set();
+
+    presenceUsers.forEach(u => {
+      if (!u || !u.uid || seen.has(u.uid)) return;
+      if (now - (u.updatedAt || 0) > PRESENCE_TTL) return;
+      seen.add(u.uid);
+      people.push(u);
+    });
+    if (!seen.has(me.uid)) people.unshift({ uid: me.uid, name: me.name, color: colorFor(me.uid) });
+
     pres.innerHTML = '';
-    const user = window.currentUser;
-    if (!user || !user.displayName) return;
-    const av = document.createElement('div');
-    av.className = 'presence__avatar';
-    av.style.background = stringToColor(user.uid || user.displayName);
-    av.textContent = (user.displayName || '?').slice(0, 1).toUpperCase();
-    av.title = 'Вы: ' + user.displayName;
-    pres.appendChild(av);
+    people.forEach(u => {
+      const av = document.createElement('div');
+      av.className = 'presence__avatar';
+      av.style.background = u.color || colorFor(u.uid);
+      av.textContent = (u.name || '?').slice(0, 1).toUpperCase();
+      av.title = (u.uid === me.uid ? 'Вы: ' : '') + (u.name || '');
+      pres.appendChild(av);
+    });
   }
 
-  function stringToColor(str) {
-    let h = 0;
-    for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
-    return `hsl(${h}, 65%, 45%)`;
+  // --- Отправка своей позиции курсора ---
+
+  function onCursorMove(e) {
+    if (!projectId || !window.Store.setPresence) return;
+    const me = myIdentity();
+    const p = screenToWorld(e.clientX, e.clientY);
+    latestPresence = {
+      name: me.name,
+      color: colorFor(me.uid),
+      x: Math.round(p.x),
+      y: Math.round(p.y),
+      updatedAt: Date.now()
+    };
+    const now = Date.now();
+    if (now - lastPresenceSent >= 90) {
+      sendPresence();
+    } else if (!presenceTrailTimer) {
+      presenceTrailTimer = setTimeout(() => {
+        presenceTrailTimer = null;
+        sendPresence();
+      }, 90 - (now - lastPresenceSent));
+    }
+  }
+
+  function sendPresence() {
+    lastPresenceSent = Date.now();
+    if (latestPresence) window.Store.setPresence(projectId, latestPresence).catch(() => {});
+  }
+
+  function onBeforeUnload() {
+    if (projectId && window.Store.clearPresence) window.Store.clearPresence(projectId);
   }
 
   // --- События ---
@@ -226,10 +366,12 @@ window.Board = (function () {
     viewport.addEventListener('wheel', onWheel, { passive: false });
     viewport.addEventListener('mousedown', onMouseDown);
     viewport.addEventListener('dblclick', onDblClick);
+    viewport.addEventListener('mousemove', onCursorMove);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('beforeunload', onBeforeUnload);
 
     document.querySelectorAll('.tool').forEach(btn => {
       btn.addEventListener('click', () => setTool(btn.dataset.tool));

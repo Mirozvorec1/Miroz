@@ -333,6 +333,50 @@ html, body {
   white-space: nowrap;
 }
 
+/* ---------- Курсоры других пользователей ---------- */
+.cursors-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+}
+.cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  will-change: transform;
+  transition: transform .09s linear;
+}
+.cursor__svg { display: block; }
+.cursor__svg path {
+  fill: var(--c, #4262ff);
+  stroke: #fff;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .35));
+}
+.cursor__name {
+  position: absolute;
+  left: 15px;
+  top: 18px;
+  display: inline-block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--c, #4262ff);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 6px;
+  border: 1.5px solid #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+}
+
 /* ---------- Модалка ---------- */
 .modal {
   position: fixed;
