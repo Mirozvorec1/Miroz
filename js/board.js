@@ -16,21 +16,25 @@ window.Board = (function () {
   let unsubscribe = null;
 
   const FONT_FAMILIES = [
-    { label: 'Sans', value: '' },
-    { label: 'Serif', value: 'Georgia, "Times New Roman", serif' },
-    { label: 'Mono', value: '"Courier New", monospace' },
-    { label: 'Rounded', value: 'Verdana, Geneva, sans-serif' },
-    { label: 'Casual', value: '"Comic Sans MS", "Segoe UI", cursive' }
+    { label: 'Simple', value: '' },
+    { label: 'Bookish', value: 'Georgia, "Times New Roman", serif' },
+    { label: 'Technical', value: '"Courier New", monospace' },
+    { label: 'Scribbled', value: '"Comic Sans MS", "Segoe UI", cursive' }
   ];
   const FONT_SIZES = [
     { label: 'Small', value: 14 },
     { label: 'Medium', value: 20 },
     { label: 'Large', value: 28 },
-    { label: 'Huge', value: 40 }
+    { label: 'Extra large', value: 40 },
+    { label: 'Huge', value: 56 }
   ];
   const TEXT_COLORS = [
-    '#1a1a1a', '#6b7280', '#ffffff', '#e5484d', '#f76808',
-    '#ffb224', '#30a46c', '#0091ff', '#8e4ec6', '#e93d82'
+    '#1a1a1a', '#4b5563', '#e5484d', '#f76808', '#f5c400', '#30a46c',
+    '#00b8d9', '#0091ff', '#8e4ec6', '#e93d82', '#ffffff', '#d1d5db'
+  ];
+  const TEXT_COLORS_LIGHT = [
+    '#f3f4f6', '#fca5a5', '#fdba74', '#fde68a', '#a7f3d0', '#99f6e4',
+    '#bae6fd', '#c4b5fd', '#fbcfe8', '#f9a8d4', '#e5e7eb', '#ffe4e6'
   ];
 
   const nodes = new Map();      // id -> данные узла
@@ -66,7 +70,9 @@ window.Board = (function () {
   let panning = false;
   let panStart = null;
   let dragGroup = null;   // { startX, startY, items:[{node, el, ox, oy}] }
+  let resizing = null;    // { id, corner, startX, startY, ox, oy, ow, oh }
   let marquee = null;     // { start, rect, el, base }
+  let lastRmb = { id: null, t: 0 };
   let viewTimer = null;
   let warnedPermission = false;
   let dragSaveTimer = null;
@@ -97,9 +103,14 @@ window.Board = (function () {
     gridEl = world.querySelector('.canvas-grid');
     if (gridEl && gridEl.parentNode === world) viewport.insertBefore(gridEl, world);
 
-    // Рамка вокруг группы выделенных элементов.
+    // Рамка вокруг выделения + угловые ручки изменения размера.
     selBox = document.createElement('div');
     selBox.className = 'sel-box hidden';
+    selBox.innerHTML =
+      '<div class="sel-handle" data-corner="nw"></div>' +
+      '<div class="sel-handle" data-corner="ne"></div>' +
+      '<div class="sel-handle" data-corner="sw"></div>' +
+      '<div class="sel-handle" data-corner="se"></div>';
     viewport.appendChild(selBox);
 
     buildTextToolbar();
@@ -232,6 +243,8 @@ window.Board = (function () {
       el.style.left = node.x + 'px';
       el.style.top = node.y + 'px';
     }
+    if (node.w !== undefined) { local.w = node.w; el.style.width = node.w == null ? '' : node.w + 'px'; }
+    if (node.h !== undefined) { local.h = node.h; el.style.height = node.h == null ? '' : node.h + 'px'; }
     ['fontFamily', 'fontSize', 'color', 'align'].forEach(k => {
       if (node[k] !== undefined) local[k] = node[k];
     });
@@ -256,6 +269,8 @@ window.Board = (function () {
     el.dataset.id = node.id;
     el.style.left = node.x + 'px';
     el.style.top = node.y + 'px';
+    if (node.w != null) el.style.width = node.w + 'px';
+    if (node.h != null) el.style.height = node.h + 'px';
     el.innerHTML = sanitizeHtml(node.text || '');
     applyNodeTextStyle(el, node);
     if (selectedIds.has(node.id)) el.classList.add('is-selected');
@@ -375,10 +390,10 @@ window.Board = (function () {
     updateTextToolbar();
   }
 
-  // Рамка вокруг всей выделенной группы (в экранных координатах).
+  // Рамка вокруг выделения (одиночного или группы) с угловыми ручками.
   function updateSelectionBox() {
     if (!selBox) return;
-    if (selectedIds.size < 2) { selBox.classList.add('hidden'); return; }
+    if (selectedIds.size === 0) { selBox.classList.add('hidden'); return; }
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     selectedIds.forEach(id => {
@@ -392,12 +407,16 @@ window.Board = (function () {
     });
     if (!isFinite(minX)) { selBox.classList.add('hidden'); return; }
 
-    const a = worldToScreen(minX, minY);
-    const b = worldToScreen(maxX, maxY);
+    const single = selectedIds.size === 1;
+    // Для группы немного расширяем рамку, чтобы личные обводки не вылезали.
+    const pad = single ? 0 : 6;
+    const a = worldToScreen(minX - pad, minY - pad);
+    const b = worldToScreen(maxX + pad, maxY + pad);
     selBox.style.left = a.x + 'px';
     selBox.style.top = a.y + 'px';
     selBox.style.width = (b.x - a.x) + 'px';
     selBox.style.height = (b.y - a.y) + 'px';
+    selBox.classList.toggle('sel-box--single', single);
     selBox.classList.remove('hidden');
   }
 
@@ -408,7 +427,7 @@ window.Board = (function () {
     textToolbar.className = 'text-toolbar hidden';
     textToolbar.innerHTML =
       '<button class="tt-btn" data-menu="color" title="Цвет текста"><span class="tt-dot"></span><span class="tt-caret">▾</span></button>' +
-      '<button class="tt-btn" data-menu="font" title="Шрифт"><span class="tt-label" data-role="font">Sans</span><span class="tt-caret">▾</span></button>' +
+      '<button class="tt-btn" data-menu="font" title="Шрифт"><span class="tt-label" data-role="font">Simple</span><span class="tt-caret">▾</span></button>' +
       '<button class="tt-btn" data-menu="size" title="Размер текста"><span class="tt-label" data-role="size">Small</span><span class="tt-caret">▾</span></button>' +
       '<span class="tt-sep"></span>' +
       '<button class="tt-btn" data-cmd="bold" title="Жирный"><b>B</b></button>' +
@@ -420,32 +439,66 @@ window.Board = (function () {
       '<span class="tt-sep"></span>' +
       '<button class="tt-btn" data-menu="align" title="Выравнивание"><span class="tt-label" data-role="align">⯇</span><span class="tt-caret">▾</span></button>';
 
-    const menus = [
-      { name: 'color', color: true, items: TEXT_COLORS.map(c => ({ value: c })) },
-      { name: 'font', items: FONT_FAMILIES.map(f => ({ label: f.label, value: f.value })) },
-      { name: 'size', items: FONT_SIZES.map(s => ({ label: s.label, value: String(s.value) })).concat([{ label: 'Свой…', value: 'custom' }]) },
-      { name: 'align', items: [
-        { label: '⯇  По левому краю', value: 'left' },
-        { label: '≡  По центру', value: 'center' },
-        { label: '⯈  По правому краю', value: 'right' }
-      ] }
-    ];
-
-    menus.forEach(m => {
-      const menu = document.createElement('div');
-      menu.className = 'tt-menu hidden';
-      menu.dataset.menuFor = m.name;
-      if (m.color) menu.classList.add('tt-colors');
-      m.items.forEach(it => {
-        const b = document.createElement('button');
-        b.className = 'tt-menu__item';
-        b.dataset.value = it.value;
-        if (m.color) b.innerHTML = '<span class="tt-swatch" style="background:' + it.value + '"></span>';
-        else b.textContent = it.label;
-        menu.appendChild(b);
-      });
-      textToolbar.appendChild(menu);
+    // Меню шрифта (с предпросмотром каждого шрифта).
+    const fontMenu = mkMenu('font');
+    FONT_FAMILIES.forEach(f => {
+      const b = mkMenuItem(f.label, f.value);
+      b.style.fontFamily = f.value || '';
+      fontMenu.appendChild(b);
     });
+
+    // Меню размера: заготовки + ручной ввод.
+    const sizeMenu = mkMenu('size');
+    FONT_SIZES.forEach(s => sizeMenu.appendChild(mkMenuItem(s.label, String(s.value))));
+    const divider = document.createElement('div');
+    divider.className = 'tt-divider';
+    sizeMenu.appendChild(divider);
+    const sizeInput = document.createElement('input');
+    sizeInput.type = 'number';
+    sizeInput.min = '6';
+    sizeInput.max = '400';
+    sizeInput.className = 'tt-num';
+    sizeInput.placeholder = 'px';
+    sizeInput.addEventListener('focus', () => { sizeInput._before = captureStyle(toolbarNodeId); });
+    sizeInput.addEventListener('input', () => {
+      if (!toolbarNodeId) return;
+      const px = Math.round(Number(sizeInput.value));
+      if (isFinite(px) && px >= 6 && px <= 400) setNodeStyle(toolbarNodeId, { fontSize: px }, true);
+    });
+    sizeInput.addEventListener('change', () => { pushStyleHistory(toolbarNodeId, sizeInput._before); });
+    sizeMenu.appendChild(sizeInput);
+
+    // Меню цвета: палитра + свой цвет («радуга»).
+    const colorMenu = mkMenu('color');
+    colorMenu.classList.add('tt-colors');
+    TEXT_COLORS.concat(TEXT_COLORS_LIGHT).forEach(c => {
+      const b = document.createElement('button');
+      b.className = 'tt-menu__item tt-color-item';
+      b.dataset.value = c;
+      b.innerHTML = '<span class="tt-swatch" style="background:' + c + '"></span>';
+      colorMenu.appendChild(b);
+    });
+    const customBtn = document.createElement('button');
+    customBtn.className = 'tt-menu__item tt-color-item';
+    customBtn.dataset.value = '__custom__';
+    customBtn.innerHTML = '<span class="tt-swatch tt-swatch--rainbow"></span>';
+    colorMenu.appendChild(customBtn);
+    const colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.className = 'tt-color-input';
+    colorInput.addEventListener('focus', () => { colorInput._before = captureStyle(toolbarNodeId); });
+    colorInput.addEventListener('input', () => {
+      if (toolbarNodeId) setNodeStyle(toolbarNodeId, { color: colorInput.value }, true);
+    });
+    colorInput.addEventListener('change', () => { pushStyleHistory(toolbarNodeId, colorInput._before); });
+    colorMenu.appendChild(colorInput);
+
+    // Меню выравнивания.
+    const alignMenu = mkMenu('align');
+    [['left', '⯇  По левому краю'], ['center', '≡  По центру'], ['right', '⯈  По правому краю']]
+      .forEach(a => alignMenu.appendChild(mkMenuItem(a[1], a[0])));
+
+    [fontMenu, sizeMenu, colorMenu, alignMenu].forEach(m => textToolbar.appendChild(m));
 
     // Клик по кнопкам не должен красть фокус/выделение у текста.
     textToolbar.addEventListener('mousedown', (e) => {
@@ -453,6 +506,7 @@ window.Board = (function () {
     });
 
     textToolbar.addEventListener('click', (e) => {
+      if (e.target.closest('input')) return;
       const menuBtn = e.target.closest('[data-menu]');
       if (menuBtn) { toggleToolbarMenu(menuBtn); return; }
 
@@ -473,6 +527,29 @@ window.Board = (function () {
     });
 
     viewport.appendChild(textToolbar);
+  }
+
+  function mkMenu(name) {
+    const menu = document.createElement('div');
+    menu.className = 'tt-menu hidden';
+    menu.dataset.menuFor = name;
+    return menu;
+  }
+
+  function mkMenuItem(label, value) {
+    const b = document.createElement('button');
+    b.className = 'tt-menu__item';
+    b.dataset.value = value;
+    b.innerHTML = '<span class="tt-check">✓</span><span class="tt-menu__label"></span>';
+    b.querySelector('.tt-menu__label').textContent = label;
+    return b;
+  }
+
+  function markMenuItem(name, value) {
+    const menu = textToolbar && textToolbar.querySelector('.tt-menu[data-menu-for="' + name + '"]');
+    if (!menu) return;
+    menu.querySelectorAll('[data-value]').forEach(b =>
+      b.classList.toggle('is-active', b.dataset.value === String(value)));
   }
 
   function toggleToolbarMenu(btn) {
@@ -498,24 +575,43 @@ window.Board = (function () {
     const menu = item.closest('.tt-menu');
     const name = menu ? menu.dataset.menuFor : null;
     const value = item.dataset.value;
+
+    if (name === 'color' && value === '__custom__') {
+      const input = textToolbar.querySelector('.tt-color-input');
+      if (input) {
+        const n = nodes.get(toolbarNodeId);
+        input.value = (n && n.color) || '#1a1a1a';
+        input._before = captureStyle(toolbarNodeId);
+        input.click();
+      }
+      return;
+    }
+
     closeToolbarMenu();
     if (!toolbarNodeId || !name) return;
 
     if (name === 'color') setNodeStyle(toolbarNodeId, { color: value });
     else if (name === 'font') setNodeStyle(toolbarNodeId, { fontFamily: value });
     else if (name === 'align') setNodeStyle(toolbarNodeId, { align: value });
-    else if (name === 'size') {
-      if (value === 'custom') {
-        const n = nodes.get(toolbarNodeId);
-        const input = prompt('Размер текста, px:', String((n && n.fontSize) || 14));
-        if (input == null) return;
-        const px = Math.round(Number(input));
-        if (!isFinite(px) || px < 6 || px > 400) return;
-        setNodeStyle(toolbarNodeId, { fontSize: px });
-      } else {
-        setNodeStyle(toolbarNodeId, { fontSize: Number(value) });
-      }
-    }
+    else if (name === 'size') setNodeStyle(toolbarNodeId, { fontSize: Number(value) });
+  }
+
+  function captureStyle(id) {
+    const n = id && nodes.get(id);
+    return n ? { fontFamily: n.fontFamily, fontSize: n.fontSize, color: n.color, align: n.align } : null;
+  }
+
+  function pushStyleHistory(id, before) {
+    if (!id || !before) return;
+    pushHistory({ undo: () => {
+      const nn = nodes.get(id);
+      const ne = nodeEls.get(id);
+      if (!nn) return;
+      Object.assign(nn, before);
+      if (ne) applyNodeTextStyle(ne, nn);
+      if (projectId) window.Store.updateNode(projectId, id, before).catch(() => {});
+      updateTextToolbar();
+    } });
   }
 
   function setLabel(role, text) {
@@ -540,6 +636,18 @@ window.Board = (function () {
     setLabel('align', (n.align === 'center') ? '≡' : (n.align === 'right' ? '⯈' : '⯇'));
     const dot = textToolbar.querySelector('.tt-dot');
     if (dot) dot.style.background = n.color || '#1a1a1a';
+
+    // Подсветка активных пунктов меню.
+    markMenuItem('font', n.fontFamily || '');
+    markMenuItem('size', preset ? sz : '__none__');
+    markMenuItem('align', n.align || 'left');
+    const colorMenu = textToolbar.querySelector('.tt-menu[data-menu-for="color"]');
+    if (colorMenu) colorMenu.querySelectorAll('[data-value]').forEach(b =>
+      b.classList.toggle('is-active', b.dataset.value === (n.color || '#1a1a1a')));
+    const colorInput = textToolbar.querySelector('.tt-color-input');
+    if (colorInput) colorInput.value = n.color || '#1a1a1a';
+    const sizeInput = textToolbar.querySelector('.tt-num');
+    if (sizeInput && document.activeElement !== sizeInput) sizeInput.value = sz;
 
     const focused = document.activeElement === el;
     ['bold', 'italic', 'strikeThrough', 'insertUnorderedList', 'insertOrderedList'].forEach(c => {
@@ -581,22 +689,15 @@ window.Board = (function () {
     try { sel.addRange(savedRange); } catch (e) { /* ignore */ }
   }
 
-  function setNodeStyle(id, patch) {
+  function setNodeStyle(id, patch, live) {
     const n = nodes.get(id);
     const el = nodeEls.get(id);
     if (!n) return;
-    const before = { fontFamily: n.fontFamily, fontSize: n.fontSize, color: n.color, align: n.align };
+    const before = captureStyle(id);
     Object.assign(n, patch);
     if (el) applyNodeTextStyle(el, n);
     if (projectId) window.Store.updateNode(projectId, id, patch).catch(handleError);
-    pushHistory({ undo: () => {
-      const nn = nodes.get(id);
-      const ne = nodeEls.get(id);
-      if (!nn) return;
-      Object.assign(nn, before);
-      if (ne) applyNodeTextStyle(ne, nn);
-      if (projectId) window.Store.updateNode(projectId, id, before).catch(() => {});
-    } });
+    if (!live) pushStyleHistory(id, before);
     updateTextToolbar();
   }
 
@@ -757,6 +858,7 @@ window.Board = (function () {
   function snapshot(node) {
     return {
       id: node.id, type: node.type, x: node.x, y: node.y,
+      w: node.w, h: node.h,
       text: node.text || '', createdBy: node.createdBy,
       fontFamily: node.fontFamily, fontSize: node.fontSize,
       color: node.color, align: node.align
@@ -990,7 +1092,6 @@ window.Board = (function () {
   function bindEvents() {
     viewport.addEventListener('wheel', onWheel, { passive: false });
     viewport.addEventListener('mousedown', onMouseDown);
-    viewport.addEventListener('dblclick', onDblClick);
     viewport.addEventListener('mousemove', onCursorMove);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
@@ -1055,8 +1156,15 @@ window.Board = (function () {
 
   function onMouseDown(e) {
     if (e.target.closest('.text-toolbar')) return;   // клики по панели форматирования
+
+    const handle = e.target.closest('.sel-handle');
+    if (handle && selectedIds.size === 1) {
+      startResize(e, handle.dataset.corner);
+      return;
+    }
+
     if (e.button === 1) { startPan(e); return; }   // СКМ — перемещение доски
-    if (e.button === 2) return;                     // ПКМ — ничего (меню отключено)
+    if (e.button === 2) { maybeEditFromRmb(e); return; } // ПКМ: выделить / двойной ПКМ — правка
     if (e.button !== 0) return;
     if (spaceDown) { startPan(e); return; }
 
@@ -1082,6 +1190,107 @@ window.Board = (function () {
 
     // ЛКМ по пустому месту — рамка выделения.
     startMarquee(e);
+  }
+
+  // Одиночная ЛКМ / первый ПКМ — только выделение; двойной ПКМ — редактирование.
+  function maybeEditFromRmb(e) {
+    const nodeEl = e.target.closest('.canvas-node');
+    if (!nodeEl) { clearSelection(); return; }
+    const id = nodeEl.dataset.id;
+    if (isLockedByOther(id)) return;
+
+    const now = Date.now();
+    const isDouble = lastRmb.id === id && (now - lastRmb.t) < 450;
+    lastRmb = { id: isDouble ? null : id, t: now };
+
+    if (!selectedIds.has(id)) selectOnly(id);
+    if (isDouble) startEditingNode(id);
+  }
+
+  function startEditingNode(id) {
+    const n = nodes.get(id);
+    const el = nodeEls.get(id);
+    if (!n || !el || !el.isContentEditable || isLockedByOther(id)) return;
+    el.focus();
+    const sel = document.getSelection();
+    if (sel) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+
+  // --- Изменение размера за угловые ручки ---
+
+  function startResize(e, corner) {
+    const id = [...selectedIds][0];
+    const n = nodes.get(id);
+    const el = nodeEls.get(id);
+    if (!n || !el || isLockedByOther(id)) return;
+    e.preventDefault();
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    resizing = {
+      id, corner,
+      startX: e.clientX, startY: e.clientY,
+      ox: n.x, oy: n.y,
+      ow: el.offsetWidth || 0, oh: el.offsetHeight || 0
+    };
+    viewport.style.cursor = 'nwse-resize';
+  }
+
+  function doResize(e) {
+    const r = resizing;
+    const n = nodes.get(r.id);
+    const el = nodeEls.get(r.id);
+    if (!n || !el) return;
+    const dx = (e.clientX - r.startX) / view.scale;
+    const dy = (e.clientY - r.startY) / view.scale;
+    const MIN = 40;
+
+    let x = r.ox, y = r.oy, w = r.ow, h = r.oh;
+    if (r.corner.indexOf('e') >= 0) w = r.ow + dx;
+    if (r.corner.indexOf('s') >= 0) h = r.oh + dy;
+    if (r.corner.indexOf('w') >= 0) { w = r.ow - dx; x = r.ox + dx; }
+    if (r.corner.indexOf('n') >= 0) { h = r.oh - dy; y = r.oy + dy; }
+    if (w < MIN) { if (r.corner.indexOf('w') >= 0) x -= (MIN - w); w = MIN; }
+    if (h < MIN) { if (r.corner.indexOf('n') >= 0) y -= (MIN - h); h = MIN; }
+
+    n.x = Math.round(x); n.y = Math.round(y);
+    n.w = Math.round(w); n.h = Math.round(h);
+    el.style.left = n.x + 'px';
+    el.style.top = n.y + 'px';
+    el.style.width = n.w + 'px';
+    el.style.height = n.h + 'px';
+    updateSelectionBox();
+    updateTextToolbar();
+    queueLiveMove([n]);
+  }
+
+  function endResize() {
+    if (!resizing) return;
+    const r = resizing;
+    resizing = null;
+    viewport.style.cursor = '';
+    const n = nodes.get(r.id);
+    if (!n) return;
+    const nx = Math.round(n.x), ny = Math.round(n.y), nw = Math.round(n.w), nh = Math.round(n.h);
+    const ox = Math.round(r.ox), oy = Math.round(r.oy), ow = Math.round(r.ow), oh = Math.round(r.oh);
+    if (projectId) window.Store.updateNode(projectId, r.id, { x: nx, y: ny, w: nw, h: nh }).catch(handleError);
+    if (nx === ox && ny === oy && nw === ow && nh === oh) return;
+    pushHistory({ undo: () => {
+      const nn = nodes.get(r.id);
+      const ne = nodeEls.get(r.id);
+      if (!nn) return;
+      nn.x = ox; nn.y = oy; nn.w = ow; nn.h = oh;
+      if (ne) {
+        ne.style.left = ox + 'px'; ne.style.top = oy + 'px';
+        ne.style.width = ow + 'px'; ne.style.height = oh + 'px';
+      }
+      if (projectId) window.Store.updateNode(projectId, r.id, { x: ox, y: oy, w: ow, h: oh }).catch(() => {});
+      updateSelectionBox();
+    } });
   }
 
   function startDragGroup(e) {
@@ -1147,11 +1356,6 @@ window.Board = (function () {
     marquee = null;
   }
 
-  function onDblClick(e) {
-    const el = e.target.closest('.canvas-node');
-    if (el && el.isContentEditable && !isLockedByOther(el.dataset.id)) el.focus();
-  }
-
   function startPan(e) {
     if (e && e.preventDefault) e.preventDefault();  // не даём браузеру автоскролл на СКМ
     panning = true;
@@ -1166,6 +1370,7 @@ window.Board = (function () {
   }
 
   function onMouseMove(e) {
+    if (resizing) { doResize(e); return; }
     if (marquee) { updateMarquee(e); return; }
     if (panning) {
       view.x = panStart.vx + (e.clientX - panStart.x);
@@ -1204,12 +1409,15 @@ window.Board = (function () {
     dragSavePending = null;
     if (!list || !projectId) return;
     list.forEach(node => {
-      window.Store.updateNode(projectId, node.id, { x: Math.round(node.x), y: Math.round(node.y) })
-        .catch(handleError);
+      const patch = { x: Math.round(node.x), y: Math.round(node.y) };
+      if (node.w != null) patch.w = Math.round(node.w);
+      if (node.h != null) patch.h = Math.round(node.h);
+      window.Store.updateNode(projectId, node.id, patch).catch(handleError);
     });
   }
 
   function onMouseUp() {
+    if (resizing) { endResize(); return; }
     if (marquee) { endMarquee(); return; }
     if (panning) { endPan(); scheduleViewSave(); }
     if (dragGroup) { endDragGroup(); }
@@ -1273,6 +1481,11 @@ window.Board = (function () {
     }
     if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); return; }
     if (e.key === 'Escape') { clearSelection(); return; }
+    if ((e.key === 'F2' || e.key === 'Enter') && selectedIds.size === 1) {
+      e.preventDefault();
+      startEditingNode([...selectedIds][0]);
+      return;
+    }
 
     if (e.key === 'v' || e.key === '1') setTool('select');
     if (e.key === 'n' || e.key === 's' || e.key === '2') setTool('sticky');

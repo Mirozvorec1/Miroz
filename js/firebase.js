@@ -135,6 +135,8 @@
       if (node.fontSize) data.fontSize = node.fontSize;
       if (node.color) data.color = node.color;
       if (node.align) data.align = node.align;
+      if (node.w != null) data.w = node.w;
+      if (node.h != null) data.h = node.h;
       await nodesCol(projectId).doc(node.id).set(data);
       await projectsCol().doc(projectId).update({ updatedAt: Date.now() }).catch(() => {});
     },

@@ -303,14 +303,14 @@ html, body {
   border-radius: 0;
 }
 .canvas-node.is-selected {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
+  outline: none;
 }
-/* В группе личные обводки тусклее — сама группа обведена рамкой .sel-box. */
+/* В группе личные обводки тусклее и не выходят за рамку .sel-box. */
 .canvas-node.is-selected.is-in-group {
   outline-width: 1px;
   outline-style: dashed;
   outline-color: rgba(66, 98, 255, .45);
+  outline-offset: -1px;
 }
 /* Узел занят другим участником: обводка цветом его курсора. */
 .canvas-node.is-locked {
@@ -374,6 +374,25 @@ html, body {
   pointer-events: none;
   z-index: 4;
 }
+.sel-box--single {
+  background: transparent;
+  z-index: 7;
+}
+.sel-handle {
+  display: none;
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border: 1.5px solid var(--primary);
+  border-radius: 0;
+  pointer-events: auto;
+}
+.sel-box--single .sel-handle { display: block; }
+.sel-handle[data-corner="nw"] { left: -5px; top: -5px; cursor: nwse-resize; }
+.sel-handle[data-corner="ne"] { right: -5px; top: -5px; cursor: nesw-resize; }
+.sel-handle[data-corner="sw"] { left: -5px; bottom: -5px; cursor: nesw-resize; }
+.sel-handle[data-corner="se"] { right: -5px; bottom: -5px; cursor: nwse-resize; }
 
 .board-slug {
   font-size: 12px;
@@ -595,7 +614,9 @@ html, body {
   z-index: 41;
 }
 .tt-menu__item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
   text-align: left;
   padding: 8px 10px;
@@ -606,15 +627,49 @@ html, body {
   cursor: pointer;
   font: inherit;
   font-size: 14px;
+  white-space: nowrap;
 }
 .tt-menu__item:hover { background: rgba(255, 255, 255, .12); }
 .tt-menu__item.is-active { background: rgba(66, 98, 255, .55); }
-.tt-colors { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; padding: 4px; }
+.tt-check { width: 12px; flex: none; visibility: hidden; }
+.tt-menu__item.is-active .tt-check { visibility: visible; }
+.tt-menu__label { flex: 1; }
+.tt-divider { height: 1px; margin: 6px 4px; background: rgba(255, 255, 255, .18); }
+.tt-num {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, .25);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .06);
+  color: #e6e8ee;
+  font: inherit;
+  font-size: 13px;
+}
+.tt-colors {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  padding: 4px;
+}
+.tt-colors .tt-menu__item { padding: 3px; justify-content: center; }
+.tt-colors .tt-check { display: none; }
 .tt-swatch {
-  width: 24px; height: 24px; border-radius: 50%;
+  width: 22px; height: 22px; border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, .4); cursor: pointer;
 }
 .tt-swatch:hover { transform: scale(1.12); }
+.tt-color-item.is-active .tt-swatch { border-color: #fff; box-shadow: 0 0 0 2px rgba(66, 98, 255, .9); }
+.tt-swatch--rainbow {
+  background: conic-gradient(#ff5a5a, #ffb347, #ffe94d, #5ed86b, #4dc3ff, #8a6bff, #ff5ac8, #ff5a5a);
+}
+.tt-color-input {
+  position: absolute;
+  opacity: 0;
+  width: 0; height: 0;
+  pointer-events: none;
+}
 
 .canvas-node ul, .canvas-node ol { margin: 4px 0; padding-left: 22px; }
 .canvas-node a { color: inherit; text-decoration: underline; }
