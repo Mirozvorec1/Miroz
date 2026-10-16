@@ -11,7 +11,8 @@ window.Board = (function () {
   let guidesLayer = null; // слой линий выравнивания (smart guides)
   let selBox = null;   // рамка вокруг группы выделенных элементов
   let projectId = null;
-  let unsubscribe = null;
+  let unsubscribe = null;        // подписка Firestore на узлы (только в live-режиме)
+  let soloMode = false;          // true — в проекте только мы, realtime выключен
 
   const FONT_FAMILIES = [
     { label: 'Simple', value: '' },
@@ -200,20 +201,47 @@ window.Board = (function () {
     applyView();
     renderPresence();
 
-    // Единственное чтение узлов — realtime-подписка (первый снимок отдаёт все
-    // документы). Отдельный Store.getNodes() убран, чтобы не читать базу дважды.
-    unsubscribe = window.Store.subscribeNodes(pid, {
-      onAdd: renderOrAdd,
-      onModify: applyRemoteNode,
-      onRemove: removeNodeById,
-      onError: handleError
-    });
+    // Оптимизация под лимит Firestore: пока в проекте только мы, realtime-подписку
+    // не держим. Узлы читаем один раз (getNodes), свои правки пишем как обычно.
+    // Как только через presence появится другой участник — включаем live-режим
+    // (subscribeNodes) и получаем обновления в реальном времени.
+    soloMode = true;
+    try {
+      const list = await window.Store.getNodes(pid);
+      list.forEach(renderOrAdd);
+    } catch (err) {
+      handleError(err);
+    }
 
     presenceUsers = [];
     presenceUnsub = window.Presence.subscribe(pid, renderCursors, handleError);
     sendJoinPresence();
     heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
     startCursorLoop();
+    // Без присутствия (RTDB) нельзя узнать о других участниках — держим live.
+    const presenceOn = window.Presence && window.Presence.enabled && window.Presence.enabled();
+    if (presenceOn) maybeGoLive(); else startLive();
+  }
+
+  // Включает realtime-подписку на узлы.
+  function startLive() {
+    if (unsubscribe || !projectId) return;
+    soloMode = false;
+    unsubscribe = window.Store.subscribeNodes(projectId, {
+      // Первый снимок отдаёт все документы как added: существующие локальные
+      // узлы не пересоздаём, а применяем к ним свежие данные.
+      onAdd: (n) => { if (nodes.has(n.id)) applyRemoteNode(n); else renderOrAdd(n); },
+      onModify: applyRemoteNode,
+      onRemove: removeNodeById,
+      onError: handleError
+    });
+  }
+
+  // Включает realtime, когда в проекте появился ещё кто-то.
+  function maybeGoLive() {
+    if (!soloMode || !projectId || unsubscribe) return;
+    if (!presenceUsers.length) return;
+    startLive();
   }
 
   function unload() {
@@ -235,6 +263,7 @@ window.Board = (function () {
     dragGroup = null;
     marquee = null;
     hideGuides();
+    soloMode = false;
     projectId = null;
   }
 
@@ -1335,6 +1364,15 @@ window.Board = (function () {
     historyLock = true;
     try { entry.undo(); } catch (e) { console.error('[undo]', e); }
     historyLock = false;
+    pruneSelection();
+  }
+
+  // Если после отмены часть выделенных элементов исчезла (например, отмена
+  // создания/вставки) — убираем их из выделения и перерисовываем рамку.
+  function pruneSelection() {
+    let changed = false;
+    selectedIds.forEach(id => { if (!nodes.has(id)) { selectedIds.delete(id); changed = true; } });
+    if (changed) syncSelection();
   }
 
   // --- Буфер обмена ---
@@ -1643,6 +1681,7 @@ window.Board = (function () {
     }
 
     renderPresence();
+    maybeGoLive();
     // Чужое выделение могло измениться — пересчитываем блокировки и подсветку.
     if (recomputeLocks()) broadcastSelection();
   }
