@@ -159,6 +159,8 @@
         data.endCap = node.endCap || 'arrow';
         data.shape = node.shape || 'straight';
         if (node.bend) data.bend = node.bend;
+        if (node.startAnch) data.startAnch = { ux: node.startAnch.ux, uy: node.startAnch.uy };
+        if (node.endAnch) data.endAnch = { ux: node.endAnch.ux, uy: node.endAnch.uy };
       }
       await nodesCol(projectId).doc(node.id).set(data);
       await projectsCol().doc(projectId).update({ updatedAt: Date.now() }).catch(() => {});

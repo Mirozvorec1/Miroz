@@ -250,7 +250,7 @@ window.Board = (function () {
 
     if (node.type === 'arrow') {
       if (!local) { renderOrAdd(node); return; }
-      ['color', 'lineStyle', 'startCap', 'endCap', 'fromId', 'toId', 'x1', 'y1', 'x2', 'y2', 'shape', 'bend']
+      ['color', 'lineStyle', 'startCap', 'endCap', 'fromId', 'toId', 'x1', 'y1', 'x2', 'y2', 'shape', 'bend', 'startAnch', 'endAnch']
         .forEach(k => { if (node[k] !== undefined) local[k] = node[k]; });
       updateArrow(local);
       return;
@@ -710,7 +710,7 @@ window.Board = (function () {
   const SVGNS = 'http://www.w3.org/2000/svg';
   const ARROW_DEFAULT_COLOR = '#1a1a1a';
   let arrowDraw = null;   // { fromId, start, cursor, preview }
-  let arrowBend = null;   // { id, axis, startX, startY, base } — ручная подстройка изгиба
+  let arrowDrag = null;   // { id, kind, axis, ... } — перетаскивание ручки стрелки
 
   function arrowDash(style) {
     switch (style) {
@@ -740,13 +740,26 @@ window.Board = (function () {
     return { x: cx + dx * s, y: cy + dy * s };
   }
 
+  // Точка привязки конца стрелки на границе элемента. По умолчанию — по
+  // направлению к другому концу; если задан якорь (startAnch/endAnch) — по нему.
+  function anchorTarget(node, which, rect, otherCenter) {
+    const anch = which === 'start' ? node.startAnch : node.endAnch;
+    const cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+    if (anch && (anch.ux || anch.uy)) return { x: cx + anch.ux, y: cy + anch.uy };
+    return otherCenter;
+  }
+
   function arrowEndpoints(node) {
     const rf = node.fromId ? rectOf(node.fromId) : null;
     const rt = node.toId ? rectOf(node.toId) : null;
-    let a = rf ? { x: rf.x + rf.w / 2, y: rf.y + rf.h / 2 } : { x: node.x1 || 0, y: node.y1 || 0 };
-    let b = rt ? { x: rt.x + rt.w / 2, y: rt.y + rt.h / 2 } : { x: node.x2 || 0, y: node.y2 || 0 };
-    if (rf) a = borderPoint(rf, b);
-    if (rt) b = borderPoint(rt, a);
+    const ca = rf ? { x: rf.x + rf.w / 2, y: rf.y + rf.h / 2 } : null;
+    const cb = rt ? { x: rt.x + rt.w / 2, y: rt.y + rt.h / 2 } : null;
+    const freeA = { x: node.x1 || 0, y: node.y1 || 0 };
+    const freeB = { x: node.x2 || 0, y: node.y2 || 0 };
+    const rawA = rf ? anchorTarget(node, 'start', rf, cb || freeB) : freeA;
+    const rawB = rt ? anchorTarget(node, 'end', rt, ca || freeA) : freeB;
+    const a = rf ? borderPoint(rf, rawA) : rawA;
+    const b = rt ? borderPoint(rt, rawB) : rawB;
     return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
   }
 
@@ -821,31 +834,46 @@ window.Board = (function () {
       }
       return {
         path: 'M ' + ax + ' ' + ay + ' C ' + c1.x + ' ' + c1.y + ' ' + c2.x + ' ' + c2.y + ' ' + bx + ' ' + by,
-        startAngle: ang, endAngle: ang, handle: null
+        startAngle: ang, endAngle: ang,
+        handles: [
+          { kind: 'start', x: ax, y: ay, axis: 'xy' },
+          { kind: 'end', x: bx, y: by, axis: 'xy' }
+        ]
       };
     }
 
     if (shape === 'elbow') {
       const bend = node.bend || 0;
-      let pts, handle;
+      let pts, hStart, hMid, hEnd;
       if (Math.abs(dx) >= Math.abs(dy)) {
         const midX = (ax + bx) / 2 + bend;
         pts = [{ x: ax, y: ay }, { x: midX, y: ay }, { x: midX, y: by }, { x: bx, y: by }];
-        handle = { x: midX, y: (ay + by) / 2, axis: 'x' };
+        hStart = { kind: 'start', x: (ax + midX) / 2, y: ay, axis: 'y' };
+        hMid = { kind: 'bend', x: midX, y: (ay + by) / 2, axis: 'x' };
+        hEnd = { kind: 'end', x: (midX + bx) / 2, y: by, axis: 'y' };
       } else {
         const midY = (ay + by) / 2 + bend;
         pts = [{ x: ax, y: ay }, { x: ax, y: midY }, { x: bx, y: midY }, { x: bx, y: by }];
-        handle = { x: (ax + bx) / 2, y: midY, axis: 'y' };
+        hStart = { kind: 'start', x: ax, y: (ay + midY) / 2, axis: 'x' };
+        hMid = { kind: 'bend', x: (ax + bx) / 2, y: midY, axis: 'y' };
+        hEnd = { kind: 'end', x: bx, y: (midY + by) / 2, axis: 'x' };
       }
       const startAngle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
       const n = pts.length;
       const endAngle = Math.atan2(pts[n - 1].y - pts[n - 2].y, pts[n - 1].x - pts[n - 2].x);
-      return { path: roundedPath(pts, 12), startAngle, endAngle, handle };
+      return { path: roundedPath(pts, 12), startAngle, endAngle, handles: [hStart, hMid, hEnd] };
     }
 
     // straight
     const ang = Math.atan2(dy, dx);
-    return { path: 'M ' + ax + ' ' + ay + ' L ' + bx + ' ' + by, startAngle: ang, endAngle: ang, handle: null };
+    return {
+      path: 'M ' + ax + ' ' + ay + ' L ' + bx + ' ' + by,
+      startAngle: ang, endAngle: ang,
+      handles: [
+        { kind: 'start', x: ax, y: ay, axis: 'xy' },
+        { kind: 'end', x: bx, y: by, axis: 'xy' }
+      ]
+    };
   }
 
   function renderArrow(node) {
@@ -855,7 +883,9 @@ window.Board = (function () {
     g.appendChild(svgEl('path', { class: 'arrow__line' }));
     g.appendChild(svgEl('path', { class: 'arrow__hit' }));
     g.appendChild(svgEl('g', { class: 'arrow__caps' }));
-    g.appendChild(svgEl('circle', { class: 'arrow__handle', r: 6 }));
+    ['start', 'bend', 'end'].forEach(kind => {
+      g.appendChild(svgEl('circle', { class: 'arrow__handle', 'data-kind': kind, r: 6 }));
+    });
     arrowLayer.appendChild(g);
     arrowEls.set(node.id, g);
     updateArrow(node);
@@ -882,17 +912,20 @@ window.Board = (function () {
     addCap(caps, e.x1, e.y1, geo.startAngle + Math.PI, node.startCap || 'none', color);
     addCap(caps, e.x2, e.y2, geo.endAngle, node.endCap || 'arrow', color);
 
-    const handle = g.querySelector('.arrow__handle');
-    if (handle) {
-      if (geo.handle) {
-        handle.setAttribute('cx', geo.handle.x);
-        handle.setAttribute('cy', geo.handle.y);
-        handle.setAttribute('data-axis', geo.handle.axis);
-        handle.style.display = '';
+    const handles = geo.handles || [];
+    ['start', 'bend', 'end'].forEach(kind => {
+      const el = g.querySelector('.arrow__handle[data-kind="' + kind + '"]');
+      if (!el) return;
+      const h = handles.find(x => x.kind === kind);
+      if (h) {
+        el.setAttribute('cx', h.x);
+        el.setAttribute('cy', h.y);
+        el.setAttribute('data-axis', h.axis);
+        el.style.display = '';
       } else {
-        handle.style.display = 'none';
+        el.style.display = 'none';
       }
-    }
+    });
     g.classList.toggle('is-selected', selectedIds.has(node.id));
   }
 
@@ -974,50 +1007,84 @@ window.Board = (function () {
     pr.setAttribute('x2', p.x); pr.setAttribute('y2', p.y);
   }
 
-  // Ручная подстройка изгиба «гибкой» стрелки (перетаскивание ручки).
-  function startArrowBend(e, id) {
+  // Перетаскивание ручек стрелки: изгиб (bend) и якоря начала/конца.
+  function startArrowDrag(e, id, kind, axis) {
     const n = nodes.get(id);
-    const g = arrowEls.get(id);
-    if (!n || !g) return;
-    const handle = g.querySelector('.arrow__handle');
+    if (!n) return;
     e.preventDefault();
     e.stopPropagation();
-    arrowBend = {
-      id, axis: (handle && handle.getAttribute('data-axis')) || 'x',
-      startX: e.clientX, startY: e.clientY, base: n.bend || 0
+    const ep = arrowEndpoints(n);
+    arrowDrag = {
+      id, kind, axis: axis || 'xy',
+      startX: e.clientX, startY: e.clientY,
+      base: { bend: n.bend || 0, x1: n.x1 || 0, y1: n.y1 || 0, x2: n.x2 || 0, y2: n.y2 || 0 },
+      baseStartAnch: n.startAnch ? { ux: n.startAnch.ux, uy: n.startAnch.uy } : null,
+      baseEndAnch: n.endAnch ? { ux: n.endAnch.ux, uy: n.endAnch.uy } : null,
+      epStart: { x: ep.x1, y: ep.y1 },
+      epEnd: { x: ep.x2, y: ep.y2 }
     };
+    viewport.style.cursor = axis === 'y' ? 'ns-resize' : axis === 'x' ? 'ew-resize' : 'move';
   }
 
-  function updateArrowBend(e) {
-    const r = arrowBend;
-    const n = nodes.get(r.id);
+  function applyEndpointDrag(n, which, r, mx, my) {
+    const anchored = which === 'start' ? !!n.fromId : !!n.toId;
+    const baseEP = which === 'start' ? r.epStart : r.epEnd;
+    const px = baseEP.x + mx, py = baseEP.y + my;
+    if (anchored) {
+      const rect = rectOf(which === 'start' ? n.fromId : n.toId);
+      if (!rect) return;
+      const cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+      const dir = { ux: px - cx, uy: py - cy };
+      if (which === 'start') n.startAnch = dir; else n.endAnch = dir;
+    } else if (which === 'start') {
+      n.x1 = Math.round(r.base.x1 + mx);
+      n.y1 = Math.round(r.base.y1 + my);
+    } else {
+      n.x2 = Math.round(r.base.x2 + mx);
+      n.y2 = Math.round(r.base.y2 + my);
+    }
+  }
+
+  function updateArrowDrag(e) {
+    const r = arrowDrag;
+    const n = r && nodes.get(r.id);
     if (!n) return;
-    const d = r.axis === 'y'
-      ? (e.clientY - r.startY) / view.scale
-      : (e.clientX - r.startX) / view.scale;
-    n.bend = Math.round(r.base + d);
+    const dx = (e.clientX - r.startX) / view.scale;
+    const dy = (e.clientY - r.startY) / view.scale;
+    if (r.kind === 'bend') {
+      n.bend = Math.round((r.base.bend || 0) + (r.axis === 'y' ? dy : dx));
+    } else {
+      const mx = r.axis === 'y' ? 0 : dx;
+      const my = r.axis === 'x' ? 0 : dy;
+      applyEndpointDrag(n, r.kind, r, mx, my);
+    }
     updateArrow(n);
   }
 
-  function endArrowBend() {
-    if (!arrowBend) return;
-    const r = arrowBend;
-    arrowBend = null;
+  function endArrowDrag() {
+    if (!arrowDrag) return;
+    const r = arrowDrag;
+    arrowDrag = null;
+    viewport.style.cursor = '';
     const n = nodes.get(r.id);
     if (!n) return;
-    const bend = n.bend || 0;
-    n.bend = r.base;
-    updateArrow(n);
-    const applyBend = (val) => {
+    const before = {
+      bend: r.base.bend, x1: r.base.x1, y1: r.base.y1, x2: r.base.x2, y2: r.base.y2,
+      startAnch: r.baseStartAnch, endAnch: r.baseEndAnch
+    };
+    const after = {
+      bend: n.bend || 0, x1: n.x1 || 0, y1: n.y1 || 0, x2: n.x2 || 0, y2: n.y2 || 0,
+      startAnch: n.startAnch || null, endAnch: n.endAnch || null
+    };
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    if (projectId) window.Store.updateNode(projectId, r.id, after).catch(handleError);
+    pushHistory({ undo: () => {
       const nn = nodes.get(r.id);
       if (!nn) return;
-      nn.bend = val;
+      Object.assign(nn, before);
       updateArrow(nn);
-      if (projectId) window.Store.updateNode(projectId, r.id, { bend: val }).catch(() => {});
-    };
-    if (bend === (r.base || 0)) return;
-    applyBend(bend);
-    pushHistory({ undo: () => applyBend(r.base) });
+      if (projectId) window.Store.updateNode(projectId, r.id, before).catch(() => {});
+    } });
   }
 
   function finishArrowDraw(e) {
@@ -1179,7 +1246,8 @@ window.Board = (function () {
       fromId: node.fromId, toId: node.toId,
       x1: node.x1, y1: node.y1, x2: node.x2, y2: node.y2,
       lineStyle: node.lineStyle, startCap: node.startCap, endCap: node.endCap,
-      shape: node.shape, bend: node.bend
+      shape: node.shape, bend: node.bend,
+      startAnch: node.startAnch, endAnch: node.endAnch
     };
   }
 
@@ -1642,7 +1710,10 @@ window.Board = (function () {
     const aHandle = e.target.closest('.arrow__handle');
     if (aHandle && e.button === 0) {
       const ag = aHandle.closest('.arrow');
-      if (ag && ag.dataset.id) { startArrowBend(e, ag.dataset.id); return; }
+      if (ag && ag.dataset.id) {
+        startArrowDrag(e, ag.dataset.id, aHandle.getAttribute('data-kind'), aHandle.getAttribute('data-axis'));
+        return;
+      }
     }
 
     if (e.button === 1) { startPan(e); return; }   // СКМ — перемещение доски
@@ -1772,12 +1843,26 @@ window.Board = (function () {
       if (r.corner === 'w') x = r.ox + (r.ow - w);
       n.w = Math.round(w);
     } else {
-      if (r.corner.indexOf('e') >= 0) w = r.ow + dx;
-      if (r.corner.indexOf('w') >= 0) w = r.ow - dx;
-      if (r.corner.indexOf('s') >= 0) h = r.oh + dy;
-      if (r.corner.indexOf('n') >= 0) h = r.oh - dy;
-      w = Math.max(MIN, snapSize(w));
-      h = Math.max(MIN, snapSize(h));
+      const hasH = r.corner.indexOf('e') >= 0 || r.corner.indexOf('w') >= 0;
+      const hasV = r.corner.indexOf('n') >= 0 || r.corner.indexOf('s') >= 0;
+
+      if (hasH) w = r.corner.indexOf('e') >= 0 ? r.ow + dx : r.ow - dx;
+      if (hasV) h = r.corner.indexOf('s') >= 0 ? r.oh + dy : r.oh - dy;
+
+      if (hasH && hasV) {
+        // Угловая ручка — масштабируем пропорционально (общий размер).
+        const relW = r.ow ? w / r.ow : 1;
+        const relH = r.oh ? h / r.oh : 1;
+        let k = Math.abs(relW - 1) >= Math.abs(relH - 1) ? relW : relH;
+        const minK = Math.max(MIN / (r.ow || MIN), MIN / (r.oh || MIN));
+        k = Math.max(k, minK);
+        w = Math.round(r.ow * k);
+        h = Math.round(r.oh * k);
+      } else {
+        // Боковая ручка (n/s) — тянем только по одной оси, элемент искажается.
+        w = Math.max(MIN, snapSize(w));
+        h = Math.max(MIN, snapSize(h));
+      }
       if (r.corner.indexOf('w') >= 0) x = r.ox + (r.ow - w);
       if (r.corner.indexOf('n') >= 0) y = r.oy + (r.oh - h);
       n.w = Math.round(w);
@@ -1903,7 +1988,7 @@ window.Board = (function () {
   }
 
   function onMouseMove(e) {
-    if (arrowBend) { updateArrowBend(e); return; }
+    if (arrowDrag) { updateArrowDrag(e); return; }
     if (arrowDraw) { updateArrowDraw(e); return; }
     if (resizing) { doResize(e); return; }
     if (marquee) { updateMarquee(e); return; }
@@ -1956,7 +2041,7 @@ window.Board = (function () {
   }
 
   function onMouseUp(e) {
-    if (arrowBend) { endArrowBend(); return; }
+    if (arrowDrag) { endArrowDrag(); return; }
     if (arrowDraw) { finishArrowDraw(e); return; }
     if (resizing) { endResize(); return; }
     if (marquee) { endMarquee(); return; }

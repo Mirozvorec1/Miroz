@@ -122,7 +122,7 @@ html, body {
   padding: 36px 28px;
   text-align: center;
 }
-.login__logo { font-size: 40px; color: var(--accent-strong); line-height: 1; }
+.login__logo { width: 56px; height: 56px; display: block; object-fit: contain; }
 .login__title { margin: 12px 0 4px; font-size: 24px; }
 .login__subtitle { margin: 0 0 24px; color: var(--text-soft); font-size: 14px; }
 .btn--google {
@@ -159,7 +159,7 @@ html, body {
   background: var(--bg);
 }
 .topbar__brand { display: flex; align-items: center; gap: 8px; }
-.logo { color: var(--accent-strong); font-size: 20px; }
+.logo { width: 26px; height: 26px; display: block; object-fit: contain; }
 .logo-text { font-weight: 700; letter-spacing: .2px; }
 .user-badge {
   font-size: 13px;
