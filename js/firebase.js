@@ -186,20 +186,6 @@
 
     async saveView(projectId, view) {
       localStorage.setItem(viewKey(projectId), JSON.stringify(view));
-    },
-
-    // --- Изображения (Firebase Storage) ---
-
-    // Загружает картинку и возвращает публичный URL.
-    // Если Storage недоступен, промис реджектится — вызывающий делает data URL.
-    async uploadImage(projectId, nodeId, blob) {
-      if (!firebase.storage) throw new Error('Storage SDK не подключён');
-      const ext = blob && blob.type === 'image/jpeg' ? '.jpg'
-        : blob && blob.type === 'image/webp' ? '.webp'
-        : blob && blob.type === 'image/gif' ? '.gif' : '.png';
-      const ref = firebase.storage().ref().child('projects/' + projectId + '/' + nodeId + ext);
-      const snap = await ref.put(blob);
-      return await snap.ref.getDownloadURL();
     }
   };
 

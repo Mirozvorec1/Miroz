@@ -437,6 +437,80 @@ window.Board = (function () {
   }
 
   // --- Изображения ---
+  //
+  // Firebase Storage требует платный план, поэтому картинку сжимаем в браузере
+  // и кладём data URL прямо в документ узла (лимит Firestore — 1 МиБ на документ,
+  // а каждый узел — отдельный документ).
+
+  const IMG_DISPLAY_MAX = 420;     // размер на доске по умолчанию (длинная сторона)
+  const IMG_SOURCE_MAX = 1600;     // максимум сохраняемой стороны
+  const IMG_BUDGET = 700000;       // бюджет длины data URL (символы ~ байты)
+
+  let webpOk = null;
+
+  function webpSupported() {
+    if (webpOk != null) return webpOk;
+    try {
+      const c = document.createElement('canvas');
+      c.width = c.height = 1;
+      webpOk = c.toDataURL('image/webp').indexOf('data:image/webp') === 0;
+    } catch (e) { webpOk = false; }
+    return webpOk;
+  }
+
+  function loadImageEl(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode failed')); };
+      img.src = url;
+    });
+  }
+
+  function drawScaled(source, w, h) {
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w));
+    c.height = Math.max(1, Math.round(h));
+    c.getContext('2d').drawImage(source, 0, 0, c.width, c.height);
+    return c;
+  }
+
+  // Сжимает картинку до бюджета IMG_BUDGET, понижая качество, затем размер.
+  async function prepareImageData(file) {
+    const img = await loadImageEl(file);
+    const ow = img.naturalWidth || img.width;
+    const oh = img.naturalHeight || img.height;
+    if (!ow || !oh) throw new Error('empty image');
+
+    const scale = Math.min(1, IMG_SOURCE_MAX / Math.max(ow, oh));
+    let w = Math.round(ow * scale);
+    let h = Math.round(oh * scale);
+    let canvas = drawScaled(img, w, h);
+
+    const keepAlpha = /^image\/(png|webp|gif|svg)/i.test(file.type) && webpSupported();
+    const mime = keepAlpha ? 'image/webp' : 'image/jpeg';
+
+    let quality = 0.85;
+    let dataUrl = canvas.toDataURL(mime, quality);
+    while (dataUrl.length > IMG_BUDGET && quality > 0.4) {
+      quality -= 0.1;
+      dataUrl = canvas.toDataURL(mime, quality);
+    }
+
+    let dim = 1;
+    while (dataUrl.length > IMG_BUDGET && dim > 0.35) {
+      dim -= 0.15;
+      const tw = Math.round(w * dim);
+      const th = Math.round(h * dim);
+      canvas = drawScaled(canvas, tw, th);
+      w = tw; h = th;
+      dataUrl = canvas.toDataURL(mime, quality);
+    }
+
+    if (dataUrl.length > IMG_BUDGET) throw new Error('image too large');
+    return { dataUrl, w, h };
+  }
 
   function pickImageAt(x, y) {
     const input = document.createElement('input');
@@ -449,57 +523,39 @@ window.Board = (function () {
     input.click();
   }
 
-  function blobToDataURL(blob) {
-    return new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = () => reject(r.error || new Error('read failed'));
-      r.readAsDataURL(blob);
-    });
+  // Вставляет картинку как элемент доски (data URL в узле).
+  async function insertImage(file, x, y) {
+    if (!file || !/^image\//.test(file.type)) return;
+    let prepared;
+    try {
+      prepared = await prepareImageData(file);
+    } catch (err) {
+      console.warn('[image]', err);
+      alert('Не удалось вставить изображение: ' + (err.message || err));
+      return;
+    }
+
+    const disp = drawScale(prepared.w, prepared.h, IMG_DISPLAY_MAX);
+    const node = {
+      id: window.Store.uid(),
+      type: 'image',
+      x: Math.round(x),
+      y: Math.round(y),
+      text: '',
+      src: prepared.dataUrl,
+      w: disp.w,
+      h: disp.h,
+      createdBy: window.currentUser ? window.currentUser.uid : 'anon'
+    };
+    placeNode(node, false);
+    selectOnly(node.id);
+    refreshSelection();
+    pushHistory({ undo: () => removeLocalAndRemote(node.id) });
   }
 
-  // Вставляет картинку как элемент доски. Файл уходит в хранилище проекта
-  // (Firebase Storage), при неудаче — inline data URL.
-  function insertImage(file, x, y) {
-    if (!file || !/^image\//.test(file.type)) return;
-    const objUrl = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = async () => {
-      const maxSide = 420;
-      let w = img.naturalWidth || 240;
-      let h = img.naturalHeight || 180;
-      const k = Math.min(1, maxSide / Math.max(w, h));
-      w = Math.round(w * k);
-      h = Math.round(h * k);
-      URL.revokeObjectURL(objUrl);
-
-      const id = window.Store.uid();
-      const user = window.currentUser;
-      let src;
-      try {
-        src = await window.Store.uploadImage(projectId, id, file);
-      } catch (err) {
-        console.warn('[image] upload failed, using data URL:', err);
-        src = await blobToDataURL(file);
-      }
-      const node = {
-        id,
-        type: 'image',
-        x: Math.round(x),
-        y: Math.round(y),
-        text: '',
-        src,
-        w,
-        h,
-        createdBy: user ? user.uid : 'anon'
-      };
-      placeNode(node, false);
-      selectOnly(id);
-      refreshSelection();
-      pushHistory({ undo: () => removeLocalAndRemote(id) });
-    };
-    img.onerror = () => URL.revokeObjectURL(objUrl);
-    img.src = objUrl;
+  function drawScale(w, h, maxSide) {
+    const k = Math.min(1, maxSide / Math.max(w, h));
+    return { w: Math.round(w * k), h: Math.round(h * k) };
   }
 
   // --- Выделение ---

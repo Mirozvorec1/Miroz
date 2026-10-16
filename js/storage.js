@@ -127,17 +127,6 @@ window.__LocalStore = (function () {
     write(KEY_VIEW + projectId, view);
   }
 
-  // --- Изображения (локальный режим: data URL) ---
-
-  function uploadImage(projectId, nodeId, blob) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(reader.error || new Error('read failed'));
-      reader.readAsDataURL(blob);
-    });
-  }
-
   return {
     listProjects,
     getProject,
@@ -153,7 +142,6 @@ window.__LocalStore = (function () {
     subscribeNodes,
     getView,
     saveView,
-    uploadImage,
     uid
   };
 })();
