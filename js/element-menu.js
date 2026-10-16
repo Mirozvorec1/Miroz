@@ -61,7 +61,7 @@ window.ElementMenu = (function () {
     });
     root.addEventListener('click', onRootClick);
 
-    ctx().viewport.appendChild(root);
+    ctx().viewport().appendChild(root);
   }
 
   function onRootClick(e) {
@@ -127,7 +127,7 @@ window.ElementMenu = (function () {
   }
 
   function position(r) {
-    const vr = ctx().viewport.getBoundingClientRect();
+    const vr = ctx().viewport().getBoundingClientRect();
     const tw = root.offsetWidth;
     const th = root.offsetHeight;
     let left = r.left - vr.left + r.width / 2 - tw / 2;
