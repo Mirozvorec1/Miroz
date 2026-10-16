@@ -134,8 +134,8 @@
       const user = window.currentUser;
       const data = {
         type: node.type,
-        x: node.x,
-        y: node.y,
+        x: node.x || 0,
+        y: node.y || 0,
         text: node.text || '',
         createdBy: user ? user.uid : 'anon',
         updatedAt: Date.now()
@@ -147,6 +147,17 @@
       if (node.w != null) data.w = node.w;
       if (node.h != null) data.h = node.h;
       if (node.src) data.src = node.src;
+      if (node.type === 'arrow') {
+        if (node.fromId) data.fromId = node.fromId;
+        if (node.toId) data.toId = node.toId;
+        data.x1 = node.x1 || 0;
+        data.y1 = node.y1 || 0;
+        data.x2 = node.x2 || 0;
+        data.y2 = node.y2 || 0;
+        data.lineStyle = node.lineStyle || 'solid';
+        data.startCap = node.startCap || 'none';
+        data.endCap = node.endCap || 'arrow';
+      }
       await nodesCol(projectId).doc(node.id).set(data);
       await projectsCol().doc(projectId).update({ updatedAt: Date.now() }).catch(() => {});
     },

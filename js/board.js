@@ -838,6 +838,8 @@ window.Board = (function () {
     const node = {
       id: window.Store.uid(),
       type: 'arrow',
+      x: Math.round(freeX || 0),
+      y: Math.round(freeY || 0),
       fromId: fromId || null,
       toId: toId || null,
       x1: 0, y1: 0,
