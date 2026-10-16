@@ -115,7 +115,14 @@ window.__LocalStore = (function () {
     touchProject(projectId);
   }
 
-  function subscribeNodes() { return function unsubscribe() {}; }
+  function subscribeNodes(projectId, handlers) {
+    // Локальный режим не имеет realtime-потока: отдаём существующие узлы сразу,
+    // как это делает первый снимок Firestore-подписки.
+    if (handlers && handlers.onAdd) {
+      read(KEY_NODES + projectId, []).forEach(n => handlers.onAdd(n));
+    }
+    return function unsubscribe() {};
+  }
 
   // --- Вид доски (персональный для каждого пользователя) ---
 

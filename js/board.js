@@ -8,6 +8,7 @@ window.Board = (function () {
   let viewport, world;
   let gridEl = null;   // фон-сетка (живёт в viewport, тайлится бесконечно)
   let arrowLayer = null; // SVG-слой стрелок-коннекторов
+  let guidesLayer = null; // слой линий выравнивания (smart guides)
   let selBox = null;   // рамка вокруг группы выделенных элементов
   let projectId = null;
   let unsubscribe = null;
@@ -83,6 +84,7 @@ window.Board = (function () {
   let resizing = null;    // { id, corner, startX, startY, ox, oy, ow, oh }
   let marquee = null;     // { start, rect, el, base }
   let lastRmb = { id: null, t: 0 };
+  let lastCursorWorld = null;   // последняя позиция курсора в мировых координатах
   let viewTimer = null;
   let warnedPermission = false;
   let dragSaveTimer = null;
@@ -131,6 +133,12 @@ window.Board = (function () {
       '<div class="sel-ball" data-ball="w"></div>';
     viewport.appendChild(selBox);
 
+    // Слой линий выравнивания (smart guides) — фиксированный, поверх холста.
+    guidesLayer = document.createElement('div');
+    guidesLayer.className = 'guides-layer hidden';
+    guidesLayer.innerHTML = '<div class="guide"></div><div class="guide"></div>';
+    viewport.appendChild(guidesLayer);
+
     // Слой стрелок-коннекторов (внутри world — трансформируется вместе с видом).
     arrowLayer = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     arrowLayer.setAttribute('class', 'arrow-layer');
@@ -150,7 +158,7 @@ window.Board = (function () {
       gridEl.style.backgroundPosition = `${view.x}px ${view.y}px`;
     }
     const zv = document.getElementById('zoom-value');
-    if (zv) zv.textContent = Math.round(view.scale * 100) + '%';
+    if (zv && document.activeElement !== zv) zv.value = Math.round(view.scale * 100) + '%';
     updateSelectionBox();
     updateTextToolbar();
     refreshArrows();
@@ -189,15 +197,11 @@ window.Board = (function () {
     view.y = v.y || 0;
     view.scale = v.scale || 1;
 
-    try {
-      const list = await window.Store.getNodes(pid);
-      list.forEach(renderOrAdd);
-    } catch (err) {
-      handleError(err);
-    }
     applyView();
     renderPresence();
 
+    // Единственное чтение узлов — realtime-подписка (первый снимок отдаёт все
+    // документы). Отдельный Store.getNodes() убран, чтобы не читать базу дважды.
     unsubscribe = window.Store.subscribeNodes(pid, {
       onAdd: renderOrAdd,
       onModify: applyRemoteNode,
@@ -230,6 +234,7 @@ window.Board = (function () {
     history.length = 0;
     dragGroup = null;
     marquee = null;
+    hideGuides();
     projectId = null;
   }
 
@@ -237,12 +242,22 @@ window.Board = (function () {
 
   function renderOrAdd(node) {
     if (nodes.has(node.id)) return;
+    sanitizeNodeNumbers(node);
     nodes.set(node.id, node);
     if (node.type === 'arrow') { renderArrow(node); return; }
     renderNode(node);
   }
 
+  // Приводим числовые поля узла к конечным значениям (в базе мог осесть NaN).
+  function sanitizeNodeNumbers(node) {
+    ['x', 'y', 'w', 'h', 'x1', 'y1', 'x2', 'y2', 'bend'].forEach(k => {
+      const v = Number(node[k]);
+      if (node[k] !== undefined && !isFinite(v)) node[k] = 0;
+    });
+  }
+
   function applyRemoteNode(node) {
+    sanitizeNodeNumbers(node);
     const local = nodes.get(node.id);
 
     if (node.type === 'arrow') {
@@ -722,7 +737,9 @@ window.Board = (function () {
     const n = nodes.get(id);
     const el = nodeEls.get(id);
     if (!n || !el) return null;
-    return { x: n.x, y: n.y, w: el.offsetWidth || 0, h: el.offsetHeight || 0 };
+    const x = Number(n.x), y = Number(n.y);
+    if (!isFinite(x) || !isFinite(y)) return null;
+    return { x, y, w: el.offsetWidth || 0, h: el.offsetHeight || 0 };
   }
 
   // Точка на границе прямоугольника в направлении target.
@@ -1040,7 +1057,8 @@ window.Board = (function () {
     e.preventDefault();
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     const rf = rectOf(fromId);
-    const start = rf ? { x: rf.x + rf.w / 2, y: rf.y + rf.h / 2 } : screenToWorld(e.clientX, e.clientY);
+    const grab = screenToWorld(e.clientX, e.clientY);
+    const start = rf ? borderPoint(rf, grab) : grab;
     const preview = svgEl('line', {
       x1: start.x, y1: start.y, x2: start.x, y2: start.y,
       stroke: '#4262ff', 'stroke-width': 2, 'stroke-dasharray': '6 4',
@@ -1054,8 +1072,7 @@ window.Board = (function () {
   function updateArrowDraw(e) {
     if (!arrowDraw) return;
     const p = screenToWorld(e.clientX, e.clientY);
-    const rf = rectOf(arrowDraw.fromId);
-    const a = rf ? borderPoint(rf, p) : arrowDraw.start;
+    const a = arrowDraw.start;
 
     const snap = findSnapTarget(e.clientX, e.clientY, arrowDraw.fromId);
     if (arrowDraw.hiEl && (!snap || arrowDraw.hiEl !== nodeEls.get(snap.id))) {
@@ -1067,7 +1084,8 @@ window.Board = (function () {
       if (arrowDraw.hiEl) arrowDraw.hiEl.classList.add('arrow-target');
     }
     arrowDraw.snap = snap;
-    const end = snap ? snap.point : p;
+    let end = snap ? snap.point : p;
+    if (!isFinite(end.x) || !isFinite(end.y)) end = p;
     arrowDraw.cursor = end;
 
     const pr = arrowDraw.preview;
@@ -1167,9 +1185,8 @@ window.Board = (function () {
     arrowDraw = null;
     viewport.style.cursor = '';
 
-    const rf = rectOf(fromId);
     const rawEnd = snap ? snap.point : p;
-    const a = rf ? borderPoint(rf, rawEnd) : startPt;
+    const a = startPt;
     // Слишком короткая стрелка — игнорируем (случайный клик по шарику).
     if (Math.hypot(rawEnd.x - a.x, rawEnd.y - a.y) < 12) return;
 
@@ -1188,7 +1205,14 @@ window.Board = (function () {
       }
     }
 
-    createArrow(fromId, toId, rawEnd.x, rawEnd.y, { endAnch });
+    // Начало стрелки крепим туда, где пользователь взялся за шарик.
+    let startAnch = null;
+    const rf = rectOf(fromId);
+    if (rf) {
+      startAnch = { ux: a.x - (rf.x + rf.w / 2), uy: a.y - (rf.y + rf.h / 2) };
+    }
+
+    createArrow(fromId, toId, rawEnd.x, rawEnd.y, { endAnch, startAnch });
     const newId = [...selectedIds][0];
     pushHistory({ undo: () => removeLocalAndRemote(newId) });
   }
@@ -1340,13 +1364,22 @@ window.Board = (function () {
     deleteSelected();
   }
 
-  function pasteClipboard() {
+  function pasteClipboard(atWorld) {
     if (!clipboard.length) return;
+    let minX = Infinity, minY = Infinity;
+    clipboard.forEach(s => {
+      minX = Math.min(minX, Number(s.x) || 0);
+      minY = Math.min(minY, Number(s.y) || 0);
+    });
+    if (!isFinite(minX)) { minX = 0; minY = 0; }
+    // Offset: либо к курсору (верхний левый угол группы), либо +24.
+    const dx = atWorld ? Math.round(atWorld.x - minX) : 24;
+    const dy = atWorld ? Math.round(atWorld.y - minY) : 24;
     const created = clipboard.map(s => {
-      const c = { ...s, id: window.Store.uid(), x: (s.x || 0) + 24, y: (s.y || 0) + 24 };
+      const c = { ...s, id: window.Store.uid(), x: (Number(s.x) || 0) + dx, y: (Number(s.y) || 0) + dy };
       if (c.type === 'arrow') {
-        c.x2 = (s.x2 || 0) + 24;
-        c.y2 = (s.y2 || 0) + 24;
+        c.x1 = (Number(s.x1) || 0) + dx; c.y1 = (Number(s.y1) || 0) + dy;
+        c.x2 = (Number(s.x2) || 0) + dx; c.y2 = (Number(s.y2) || 0) + dy;
       }
       return c;
     });
@@ -1728,6 +1761,37 @@ window.Board = (function () {
     document.getElementById('zoom-in').addEventListener('click', () => zoomAt(zoomStep()));
     document.getElementById('zoom-out').addEventListener('click', () => zoomAt(-zoomStep()));
     document.getElementById('zoom-reset').addEventListener('click', resetView);
+
+    // Ручной ввод масштаба в процентах.
+    const zv = document.getElementById('zoom-value');
+    if (zv) {
+      const applyZoomInput = () => {
+        const pct = parseInt(String(zv.value).replace(/[^\d]/g, ''), 10);
+        if (isFinite(pct) && pct > 0) setScalePercent(pct);
+        else zv.value = Math.round(view.scale * 100) + '%';
+      };
+      zv.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); applyZoomInput(); zv.blur(); }
+        if (e.key === 'Escape') { zv.value = Math.round(view.scale * 100) + '%'; zv.blur(); }
+      });
+      zv.addEventListener('blur', applyZoomInput);
+      zv.addEventListener('focus', () => zv.select());
+    }
+  }
+
+  // Устанавливает масштаб в процентах относительно центра холста.
+  function setScalePercent(pct) {
+    const r = viewport.getBoundingClientRect();
+    const cx = r.width / 2, cy = r.height / 2;
+    const worldX = (cx - view.x) / view.scale;
+    const worldY = (cy - view.y) / view.scale;
+    let next = pct / 100;
+    next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
+    view.scale = next;
+    view.x = cx - worldX * view.scale;
+    view.y = cy - worldY * view.scale;
+    applyView();
+    scheduleViewSave();
   }
 
   function zoomStep() {
@@ -1974,7 +2038,11 @@ window.Board = (function () {
 
   // --- Изменение размера за ручки (уголки — с шагом, бока — только ширина) ---
 
-  function snapSize(v) { return Math.round(v / RESIZE_STEP) * RESIZE_STEP; }
+  function snapSize(v) {
+    const step = (window.Settings && window.Settings.resizeStep) ? window.Settings.resizeStep() : RESIZE_STEP;
+    const s = step > 0 ? step : 1;
+    return Math.round(v / s) * s;
+  }
 
   function startResize(e, corner) {
     const id = [...selectedIds][0];
@@ -2048,7 +2116,6 @@ window.Board = (function () {
     applyNodeBox(el, n);
     updateSelectionBox();
     updateTextToolbar();
-    queueLiveMove([n]);
   }
 
   function endResize() {
@@ -2088,7 +2155,7 @@ window.Board = (function () {
     selectedIds.forEach(id => {
       const node = nodes.get(id);
       const el = nodeEls.get(id);
-      if (node && el) { items.push({ node, el, ox: node.x, oy: node.y }); draggingIds.add(id); }
+      if (node && el) { items.push({ node, el, ox: Number(node.x) || 0, oy: Number(node.y) || 0 }); draggingIds.add(id); }
     });
     if (!items.length) return;
     dragGroup = { startX: e.clientX, startY: e.clientY, items };
@@ -2161,6 +2228,7 @@ window.Board = (function () {
   }
 
   function onMouseMove(e) {
+    lastCursorWorld = screenToWorld(e.clientX, e.clientY);
     if (arrowDrag) { updateArrowDrag(e); return; }
     if (arrowDraw) { updateArrowDraw(e); return; }
     if (resizing) { doResize(e); return; }
@@ -2178,39 +2246,96 @@ window.Board = (function () {
       }
       const dx = (e.clientX - dragGroup.startX) / view.scale;
       const dy = (e.clientY - dragGroup.startY) / view.scale;
+      const snap = computeSnap(dx, dy);
+      if (snap) { dragGroup.snap = snap; }
+      const adx = snap ? snap.dx : dx, ady = snap ? snap.dy : dy;
       dragGroup.items.forEach(it => {
-        it.node.x = it.ox + dx;
-        it.node.y = it.oy + dy;
+        it.node.x = it.ox + adx;
+        it.node.y = it.oy + ady;
         it.el.style.left = it.node.x + 'px';
         it.el.style.top = it.node.y + 'px';
       });
+      showGuides(snap ? snap.guides : null);
       updateSelectionBox();
       updateTextToolbar();
-      queueLiveMove(dragGroup.items.map(it => it.node));
     }
   }
 
-  // Другие пользователи видят перемещение элементов в реальном времени.
-  function queueLiveMove(nodeList) {
-    dragSavePending = nodeList;
-    if (dragSaveTimer) return;
-    flushLiveMove();
-    dragSaveTimer = setTimeout(() => {
-      dragSaveTimer = null;
-      if (dragSavePending) flushLiveMove();
-    }, 40);
+  // --- Линии выравнивания (smart guides) при перетаскивании ---
+
+  const SNAP_PX = 6;   // порог прилипания на экране, px
+
+  function computeSnap(dx, dy) {
+    if (!dragGroup) return null;
+    const moving = new Set(dragGroup.items.map(it => it.node.id));
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    dragGroup.items.forEach(it => {
+      const w = it.el.offsetWidth || 0, h = it.el.offsetHeight || 0;
+      minX = Math.min(minX, it.ox + dx);
+      minY = Math.min(minY, it.oy + dy);
+      maxX = Math.max(maxX, it.ox + dx + w);
+      maxY = Math.max(maxY, it.oy + dy + h);
+    });
+    if (!isFinite(minX)) return null;
+    const mX = [minX, (minX + maxX) / 2, maxX];
+    const mY = [minY, (minY + maxY) / 2, maxY];
+
+    const thr = SNAP_PX / view.scale;
+    let bestX = null, bestY = null;
+    nodes.forEach(n => {
+      if (moving.has(n.id) || n.type === 'arrow') return;
+      if (!isFinite(n.x) || !isFinite(n.y)) return;
+      const el = nodeEls.get(n.id);
+      if (!el) return;
+      const tX = [n.x, n.x + (el.offsetWidth || 0) / 2, n.x + (el.offsetWidth || 0)];
+      const tY = [n.y, n.y + (el.offsetHeight || 0) / 2, n.y + (el.offsetHeight || 0)];
+      mX.forEach(gv => tX.forEach(tv => {
+        const d = tv - gv;
+        if (Math.abs(d) <= thr && (!bestX || Math.abs(d) < Math.abs(bestX.d))) bestX = { d, at: tv };
+      }));
+      mY.forEach(gv => tY.forEach(tv => {
+        const d = tv - gv;
+        if (Math.abs(d) <= thr && (!bestY || Math.abs(d) < Math.abs(bestY.d))) bestY = { d, at: tv };
+      }));
+    });
+
+    if (!bestX && !bestY) return null;
+    const guides = [];
+    if (bestX) guides.push({ axis: 'v', at: bestX.at });
+    if (bestY) guides.push({ axis: 'h', at: bestY.at });
+    return { dx: dx + (bestX ? bestX.d : 0), dy: dy + (bestY ? bestY.d : 0), guides };
   }
 
-  function flushLiveMove() {
-    const list = dragSavePending;
-    dragSavePending = null;
-    if (!list || !projectId) return;
-    list.forEach(node => {
-      const patch = { x: Math.round(node.x), y: Math.round(node.y) };
-      if (node.w != null) patch.w = Math.round(node.w);
-      if (node.h != null) patch.h = Math.round(node.h);
-      window.Store.updateNode(projectId, node.id, patch).catch(handleError);
+  function showGuides(guides) {
+    if (!guidesLayer) return;
+    if (!guides || !guides.length) { guidesLayer.classList.add('hidden'); return; }
+    let idx = 0;
+    guides.forEach(g => {
+      const line = guidesLayer.children[idx++];
+      if (!line) return;
+      if (g.axis === 'v') {
+        const p = worldToScreen(g.at, 0);
+        line.className = 'guide guide--v';
+        line.style.left = p.x + 'px';
+        line.style.top = '0px';
+        line.style.height = '100%';
+        line.style.width = '1px';
+      } else {
+        const p = worldToScreen(0, g.at);
+        line.className = 'guide guide--h';
+        line.style.left = '0px';
+        line.style.top = p.y + 'px';
+        line.style.width = '100%';
+        line.style.height = '1px';
+      }
+      line.style.display = '';
     });
+    for (; idx < guidesLayer.children.length; idx++) guidesLayer.children[idx].style.display = 'none';
+    guidesLayer.classList.remove('hidden');
+  }
+
+  function hideGuides() {
+    if (guidesLayer) guidesLayer.classList.add('hidden');
   }
 
   function onMouseUp(e) {
@@ -2226,6 +2351,7 @@ window.Board = (function () {
     const items = dragGroup.items;
     if (dragSaveTimer) { clearTimeout(dragSaveTimer); dragSaveTimer = null; }
     dragSavePending = null;
+    hideGuides();
 
     const moves = [];
     items.forEach(it => {
@@ -2282,7 +2408,7 @@ window.Board = (function () {
     if (ctrl && (e.key === 'v' || e.key === 'V' || e.key === 'м' || e.key === 'М')) {
       // Внутренняя вставка (скопированные элементы) — только если буфер не пуст.
       // Иначе не перехватываем: пусть сработает системный paste (внешний текст/картинки).
-      if (clipboard.length) { e.preventDefault(); pasteClipboard(); }
+      if (clipboard.length) { e.preventDefault(); pasteClipboard(lastCursorWorld); }
       return;
     }
     if (ctrl && (e.key === 'a' || e.key === 'A' || e.key === 'ф' || e.key === 'Ф')) {
@@ -2333,6 +2459,7 @@ window.Board = (function () {
     viewport: () => viewport,
     projectId: () => projectId,
     worldToScreen,
+    screenToWorld,
     getNode: (id) => nodes.get(id),
     getEl: (id) => nodeEls.get(id) || arrowEls.get(id),
     singleId: () => (selectedIds.size === 1 ? [...selectedIds][0] : null),

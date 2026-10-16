@@ -81,6 +81,8 @@ window.ContextMenu = (function () {
     root.style.left = left + 'px';
     root.style.top = top + 'px';
     root._nodeId = nodeId;
+    root._x = x;
+    root._y = y;
   }
 
   function addItem(label, action) {
@@ -103,7 +105,7 @@ window.ContextMenu = (function () {
       case 'copy': c.copySelected(); break;
       case 'cut': c.cutSelected(); break;
       case 'duplicate': c.duplicateSelected(); break;
-      case 'paste': c.pasteClipboard(); break;
+      case 'paste': c.pasteClipboard(c.screenToWorld(root._x, root._y)); break;
       case 'delete': c.deleteSelected(); break;
       case 'reset-image': if (nodeId) c.resetImageSize(nodeId); break;
     }

@@ -40,7 +40,7 @@ window.Settings = (function () {
     { value: 'elbow', label: 'Гибкая (вручную)' }
   ];
 
-  const DEFAULTS = { zoomStep: 0.2, theme: 'light', arrowShape: 'straight' };
+  const DEFAULTS = { zoomStep: 0.2, theme: 'light', arrowShape: 'straight', resizeStep: 10 };
 
   let local = load();
   let ctx = null;          // { projectId, project }
@@ -206,6 +206,24 @@ window.Settings = (function () {
     row.appendChild(range);
     sec.appendChild(row);
 
+    const stepRow = el('div', 'settings-row');
+    stepRow.style.marginTop = '18px';
+    stepRow.appendChild(el('div', 'settings-label', 'Шаг изменения размера элемента, px'));
+    const stepInput = document.createElement('input');
+    stepInput.type = 'number';
+    stepInput.min = '1';
+    stepInput.max = '200';
+    stepInput.className = 'settings-input';
+    stepInput.placeholder = 'px';
+    stepInput.value = String(Number(local.resizeStep) || DEFAULTS.resizeStep);
+    stepInput.addEventListener('change', () => {
+      const v = Math.round(Number(stepInput.value));
+      if (isFinite(v) && v >= 1 && v <= 200) setLocal({ resizeStep: v });
+      else stepInput.value = String(local.resizeStep || DEFAULTS.resizeStep);
+    });
+    stepRow.appendChild(stepInput);
+    sec.appendChild(stepRow);
+
     const shapeLbl = el('div', 'settings-label', 'Начальная форма стрелок');
     shapeLbl.style.marginTop = '18px';
     sec.appendChild(shapeLbl);
@@ -290,6 +308,7 @@ window.Settings = (function () {
 
   function zoomStep() { return Number(local.zoomStep) || DEFAULTS.zoomStep; }
   function arrowShape() { return local.arrowShape || DEFAULTS.arrowShape; }
+  function resizeStep() { return Number(local.resizeStep) || DEFAULTS.resizeStep; }
 
   applyTheme();
   document.addEventListener('DOMContentLoaded', applyTheme);
@@ -302,6 +321,7 @@ window.Settings = (function () {
     setLocal,
     zoomStep,
     arrowShape,
+    resizeStep,
     themes: THEMES,
     fonts: FONTS,
     sizes: SIZES,
