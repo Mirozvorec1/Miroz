@@ -34,8 +34,13 @@ window.Settings = (function () {
     { id: 'dark-green', label: 'Тёмно-зелёная' },
     { id: 'dark-red', label: 'Тёмно-красная' }
   ];
+  const ARROW_SHAPES = [
+    { value: 'straight', label: 'Прямая' },
+    { value: 'curved', label: 'Гибкая (360°)' },
+    { value: 'elbow', label: 'Гибкая (вручную)' }
+  ];
 
-  const DEFAULTS = { zoomStep: 0.2, theme: 'light' };
+  const DEFAULTS = { zoomStep: 0.2, theme: 'light', arrowShape: 'straight' };
 
   let local = load();
   let ctx = null;          // { projectId, project }
@@ -111,7 +116,9 @@ window.Settings = (function () {
         return;
       }
       const sw = e.target.closest('.theme-swatch');
-      if (sw) { setLocal({ theme: sw.dataset.themeId }); refreshLocal(); }
+      if (sw) { setLocal({ theme: sw.dataset.themeId }); refreshLocal(); return; }
+      const sh = e.target.closest('.shape-swatch');
+      if (sh) { setLocal({ arrowShape: sh.dataset.shape }); refreshLocal(); return; }
     });
 
     setTimeout(() => document.addEventListener('mousedown', onDocDown, true), 0);
@@ -198,6 +205,21 @@ window.Settings = (function () {
     });
     row.appendChild(range);
     sec.appendChild(row);
+
+    const shapeLbl = el('div', 'settings-label', 'Начальная форма стрелок');
+    shapeLbl.style.marginTop = '18px';
+    sec.appendChild(shapeLbl);
+
+    const shapes = el('div', 'shape-grid');
+    ARROW_SHAPES.forEach(s => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'shape-swatch' + ((local.arrowShape || 'straight') === s.value ? ' is-active' : '');
+      b.dataset.shape = s.value;
+      b.textContent = s.label;
+      shapes.appendChild(b);
+    });
+    sec.appendChild(shapes);
   }
 
   function refreshGlobal() {
@@ -236,17 +258,14 @@ window.Settings = (function () {
     const sizeRow = el('div', 'settings-row');
     sizeRow.style.marginTop = '16px';
     sizeRow.appendChild(el('div', 'settings-label', 'Стандартный размер текста'));
-    const sizeSel = document.createElement('select');
-    sizeSel.className = 'settings-select';
-    const cur = Number(p.defaultFontSize) || 16;
-    SIZES.forEach(s => {
-      const o = document.createElement('option');
-      o.value = String(s.value);
-      o.textContent = s.label;
-      if (cur === s.value) o.selected = true;
-      sizeSel.appendChild(o);
-    });
-    sizeRow.appendChild(sizeSel);
+    const sizeInput = document.createElement('input');
+    sizeInput.type = 'number';
+    sizeInput.min = '6';
+    sizeInput.max = '400';
+    sizeInput.className = 'settings-input';
+    sizeInput.placeholder = 'px';
+    sizeInput.value = String(Number(p.defaultFontSize) || 16);
+    sizeRow.appendChild(sizeInput);
     sec.appendChild(sizeRow);
 
     sec.appendChild(el('p', 'settings-note',
@@ -254,7 +273,9 @@ window.Settings = (function () {
       'создаются с этим шрифтом и размером.'));
 
     const save = () => {
-      const patch = { defaultFontFamily: fontSel.value, defaultFontSize: Number(sizeSel.value) };
+      const px = Math.round(Number(sizeInput.value));
+      if (!isFinite(px) || px < 6 || px > 400) return;
+      const patch = { defaultFontFamily: fontSel.value, defaultFontSize: px };
       if (!window.Store || !window.Store.updateProject) return;
       window.Store.updateProject(ctx.projectId, patch)
         .then(() => {
@@ -264,10 +285,11 @@ window.Settings = (function () {
         .catch(err => console.warn('[settings]', err));
     };
     fontSel.addEventListener('change', save);
-    sizeSel.addEventListener('change', save);
+    sizeInput.addEventListener('change', save);
   }
 
   function zoomStep() { return Number(local.zoomStep) || DEFAULTS.zoomStep; }
+  function arrowShape() { return local.arrowShape || DEFAULTS.arrowShape; }
 
   applyTheme();
   document.addEventListener('DOMContentLoaded', applyTheme);
@@ -279,8 +301,10 @@ window.Settings = (function () {
     updateProject,
     setLocal,
     zoomStep,
+    arrowShape,
     themes: THEMES,
     fonts: FONTS,
-    sizes: SIZES
+    sizes: SIZES,
+    arrowShapes: ARROW_SHAPES
   };
 })();

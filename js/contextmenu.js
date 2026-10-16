@@ -33,8 +33,6 @@ window.ContextMenu = (function () {
 
   function onContextMenu(e) {
     if (e.target.closest('input, textarea')) return;          // полям ввода — нативное меню
-    const active = document.activeElement;
-    if (active && active.isContentEditable && active.contains(e.target)) return; // правка текста
 
     e.preventDefault();
     const c = ctx();

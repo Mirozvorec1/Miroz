@@ -10,6 +10,7 @@ window.ElementMenu = (function () {
   let root = null;
   let textPanel = null;
   let arrowPanel = null;
+  let alignPanel = null;
   let nodeId = null;
   let openMenu = null;      // открытое подменю текстовой панели
   let savedRange = null;    // сохранённое выделение внутри текста
@@ -58,8 +59,11 @@ window.ElementMenu = (function () {
     textPanel = buildTextPanel();
     arrowPanel = buildArrowPanel();
     arrowPanel.classList.add('hidden');
+    alignPanel = buildAlignPanel();
+    alignPanel.classList.add('hidden');
     root.appendChild(textPanel);
     root.appendChild(arrowPanel);
+    root.appendChild(alignPanel);
 
     root.addEventListener('mousedown', (e) => {
       if (e.target.closest('button')) e.preventDefault();
@@ -71,6 +75,12 @@ window.ElementMenu = (function () {
 
   function onRootClick(e) {
     if (e.target.closest('input')) return;
+
+    const al = e.target.closest('[data-align]');
+    if (al) { ctx().alignSelection(al.dataset.align); return; }
+    const di = e.target.closest('[data-distribute]');
+    if (di) { ctx().distributeSelection(di.dataset.distribute); return; }
+
     const menuBtn = e.target.closest('[data-menu]');
     if (menuBtn) { toggleMenu(menuBtn); return; }
 
@@ -94,6 +104,25 @@ window.ElementMenu = (function () {
 
   function update() {
     if (!root) return;
+
+    // Множественное выделение — панель выравнивания.
+    const count = ctx().selectionCount();
+    if (count >= 2) {
+      nodeId = null;
+      closeMenu();
+      const b = ctx().selectionBounds();
+      if (!b) { hide(); return; }
+      textPanel.classList.add('hidden');
+      arrowPanel.classList.add('hidden');
+      alignPanel.classList.remove('hidden');
+      alignPanel.querySelectorAll('[data-distribute]').forEach(btn => { btn.disabled = count < 3; });
+      root.classList.remove('hidden');
+      const a = ctx().worldToScreen(b.x, b.y);
+      const bb = ctx().worldToScreen(b.x + b.w, b.y + b.h);
+      position({ left: a.x, top: a.y, right: bb.x, bottom: bb.y, width: bb.x - a.x, height: bb.y - a.y });
+      return;
+    }
+
     const id = ctx().singleId();
     const n = id && ctx().getNode(id);
     const el = id && ctx().getEl(id);
@@ -103,6 +132,7 @@ window.ElementMenu = (function () {
 
     nodeId = id;
     root.classList.remove('hidden');
+    alignPanel.classList.add('hidden');
     textPanel.classList.toggle('hidden', !isText);
     arrowPanel.classList.toggle('hidden', !isArrow);
     if (!isText) closeMenu();
@@ -315,6 +345,84 @@ window.ElementMenu = (function () {
     const s = document.createElement('span');
     s.className = 'tt-sep';
     return s;
+  }
+
+  // ---------- Панель выравнивания (мультивыделение) ----------
+
+  function buildAlignPanel() {
+    const panel = document.createElement('div');
+    panel.className = 'em-panel em-align';
+    const defs = [
+      ['left', 'По левому краю'],
+      ['center', 'По центру (по горизонтали)'],
+      ['right', 'По правому краю'],
+      ['top', 'По верхнему краю'],
+      ['middle', 'По центру (по вертикали)'],
+      ['bottom', 'По нижнему краю']
+    ];
+    defs.forEach((d, i) => {
+      if (i === 3) panel.appendChild(sep());
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tt-btn em-align-btn';
+      b.title = d[1];
+      b.dataset.align = d[0];
+      b.innerHTML = alignIco(d[0]);
+      panel.appendChild(b);
+    });
+    panel.appendChild(sep());
+    [['h', 'Распределить по горизонтали'], ['v', 'Распределить по вертикали']].forEach(d => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tt-btn em-align-btn';
+      b.title = d[1];
+      b.dataset.distribute = d[0];
+      b.innerHTML = distributeIco(d[0]);
+      panel.appendChild(b);
+    });
+    return panel;
+  }
+
+  function alignIco(kind) {
+    const W = 18, H = 18;
+    const guide = {
+      left: 'M2 1 V17', center: 'M9 1 V17', right: 'M16 1 V17',
+      top: 'M1 2 H17', middle: 'M1 9 H17', bottom: 'M1 16 H17'
+    }[kind];
+    let bars = '';
+    if (kind === 'left' || kind === 'center' || kind === 'right') {
+      const ws = [12, 7, 12, 7];
+      [3, 7, 11, 15].forEach((y, i) => {
+        const w = ws[i];
+        let x = 2;
+        if (kind === 'center') x = (W - w) / 2;
+        else if (kind === 'right') x = W - 2 - w;
+        bars += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="2.2" rx="1.1"/>';
+      });
+    } else {
+      const hs = [12, 7, 12, 7];
+      [3, 7, 11, 15].forEach((x, i) => {
+        const h = hs[i];
+        let y = 2;
+        if (kind === 'middle') y = (H - h) / 2;
+        else if (kind === 'bottom') y = H - 2 - h;
+        bars += '<rect x="' + x + '" y="' + y + '" width="2.2" height="' + h + '" rx="1.1"/>';
+      });
+    }
+    return '<svg class="em-align-ico" viewBox="0 0 18 18">' +
+      '<path d="' + guide + '" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>' +
+      '<g fill="currentColor">' + bars + '</g></svg>';
+  }
+
+  function distributeIco(axis) {
+    if (axis === 'h') {
+      return '<svg class="em-align-ico" viewBox="0 0 18 18" fill="currentColor">' +
+        '<rect x="1" y="4" width="3" height="10" rx="1"/><rect x="7.5" y="4" width="3" height="10" rx="1"/>' +
+        '<rect x="14" y="4" width="3" height="10" rx="1"/></svg>';
+    }
+    return '<svg class="em-align-ico" viewBox="0 0 18 18" fill="currentColor">' +
+      '<rect x="4" y="1" width="10" height="3" rx="1"/><rect x="4" y="7.5" width="10" height="3" rx="1"/>' +
+      '<rect x="4" y="14" width="10" height="3" rx="1"/></svg>';
   }
 
   function updateArrowPanel(n) {

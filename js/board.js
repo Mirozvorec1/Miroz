@@ -138,9 +138,6 @@ window.Board = (function () {
 
     if (window.ElementMenu && window.ElementMenu.init) window.ElementMenu.init();
 
-    const hint = document.getElementById('canvas-hint');
-    if (hint) hint.textContent = 'ЛКМ — выделение и рамка, повторный клик — правка, СКМ — перемещение доски';
-
     bindEvents();
   }
 
@@ -740,6 +737,37 @@ window.Board = (function () {
     return { x: cx + dx * s, y: cy + dy * s };
   }
 
+  // Ближайшая точка на границе прямоугольника к точке p.
+  function nearestBorderPoint(rect, p) {
+    const cl = (v, a, b) => Math.max(a, Math.min(v, b));
+    const l = Math.abs(p.x - rect.x), r = Math.abs(rect.x + rect.w - p.x);
+    const t = Math.abs(p.y - rect.y), bt = Math.abs(rect.y + rect.h - p.y);
+    const m = Math.min(l, r, t, bt);
+    if (m === l) return { x: rect.x, y: cl(p.y, rect.y, rect.y + rect.h) };
+    if (m === r) return { x: rect.x + rect.w, y: cl(p.y, rect.y, rect.y + rect.h) };
+    if (m === t) return { x: cl(p.x, rect.x, rect.x + rect.w), y: rect.y };
+    return { x: cl(p.x, rect.x, rect.x + rect.w), y: rect.y + rect.h };
+  }
+
+  // Магнит при рисовании стрелки: ищем ближайший элемент в радиусе radiusPx
+  // и притягиваем конец к его границе.
+  function findSnapTarget(clientX, clientY, excludeId, radiusPx) {
+    const p = screenToWorld(clientX, clientY);
+    const rad = (radiusPx || 18) / view.scale;
+    let best = null;
+    nodes.forEach(n => {
+      if (n.type === 'arrow' || n.id === excludeId) return;
+      const rect = rectOf(n.id);
+      if (!rect) return;
+      if (p.x < rect.x - rad || p.x > rect.x + rect.w + rad) return;
+      if (p.y < rect.y - rad || p.y > rect.y + rect.h + rad) return;
+      const point = nearestBorderPoint(rect, p);
+      const d = Math.hypot(point.x - p.x, point.y - p.y);
+      if (!best || d < best.d) best = { id: n.id, point, rect, d };
+    });
+    return best;
+  }
+
   // Точка привязки конца стрелки на границе элемента. По умолчанию — по
   // направлению к другому концу; если задан якорь (startAnch/endAnch) — по нему.
   function anchorTarget(node, which, rect, otherCenter) {
@@ -813,13 +841,22 @@ window.Board = (function () {
     return d;
   }
 
+  // Сторона, к которой примыкает точка: 'h' — вертикальная грань (вход
+  // горизонтальный), 'v' — горизонтальная грань (вход вертикальный).
+  function attachOrient(rect, pt) {
+    const cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+    return Math.abs(pt.x - cx) >= Math.abs(pt.y - cy) ? 'h' : 'v';
+  }
+
   // Геометрия стрелки по её форме. Возвращает path, углы наконечников
-  // и (для формы «elbow») положение ручки для ручной подстройки изгиба.
+  // и ручки: начало, изгиб (для elbow), конец.
   function arrowGeometry(node) {
     const e = arrowEndpoints(node);
     const ax = e.x1, ay = e.y1, bx = e.x2, by = e.y2;
     const dx = bx - ax, dy = by - ay;
     const shape = node.shape || 'straight';
+    const rf = node.fromId ? rectOf(node.fromId) : null;
+    const rt = node.toId ? rectOf(node.toId) : null;
 
     if (shape === 'curved') {
       let c1, c2, ang;
@@ -844,24 +881,38 @@ window.Board = (function () {
 
     if (shape === 'elbow') {
       const bend = node.bend || 0;
-      let pts, hStart, hMid, hEnd;
-      if (Math.abs(dx) >= Math.abs(dy)) {
-        const midX = (ax + bx) / 2 + bend;
-        pts = [{ x: ax, y: ay }, { x: midX, y: ay }, { x: midX, y: by }, { x: bx, y: by }];
-        hStart = { kind: 'start', x: (ax + midX) / 2, y: ay, axis: 'y' };
-        hMid = { kind: 'bend', x: midX, y: (ay + by) / 2, axis: 'x' };
-        hEnd = { kind: 'end', x: (midX + bx) / 2, y: by, axis: 'y' };
+      const oA = rf ? attachOrient(rf, { x: ax, y: ay }) : null;
+      const oB = rt ? attachOrient(rt, { x: bx, y: by }) : null;
+      const mixedHV = oA === 'h' && oB === 'v';
+      const mixedVH = oA === 'v' && oB === 'h';
+      let pts, hMid;
+      if (mixedHV || mixedVH) {
+        // Г-образный маршрут: угол задан однозначно.
+        const cor = { x: mixedHV ? bx : ax, y: mixedHV ? ay : by };
+        pts = [{ x: ax, y: ay }, cor, { x: bx, y: by }];
+        hMid = null;
       } else {
-        const midY = (ay + by) / 2 + bend;
-        pts = [{ x: ax, y: ay }, { x: ax, y: midY }, { x: bx, y: midY }, { x: bx, y: by }];
-        hStart = { kind: 'start', x: ax, y: (ay + midY) / 2, axis: 'x' };
-        hMid = { kind: 'bend', x: (ax + bx) / 2, y: midY, axis: 'y' };
-        hEnd = { kind: 'end', x: bx, y: (midY + by) / 2, axis: 'x' };
+        let horiz;
+        if (oA === 'h' || oB === 'h') horiz = true;
+        else if (oA === 'v' || oB === 'v') horiz = false;
+        else horiz = Math.abs(dx) >= Math.abs(dy);
+        if (horiz) {
+          const midX = (ax + bx) / 2 + bend;
+          pts = [{ x: ax, y: ay }, { x: midX, y: ay }, { x: midX, y: by }, { x: bx, y: by }];
+          hMid = { kind: 'bend', x: midX, y: (ay + by) / 2, axis: 'x' };
+        } else {
+          const midY = (ay + by) / 2 + bend;
+          pts = [{ x: ax, y: ay }, { x: ax, y: midY }, { x: bx, y: midY }, { x: bx, y: by }];
+          hMid = { kind: 'bend', x: (ax + bx) / 2, y: midY, axis: 'y' };
+        }
       }
+      const handles = [{ kind: 'start', x: ax, y: ay, axis: 'xy' }];
+      if (hMid) handles.push(hMid);
+      handles.push({ kind: 'end', x: bx, y: by, axis: 'xy' });
       const startAngle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
       const n = pts.length;
       const endAngle = Math.atan2(pts[n - 1].y - pts[n - 2].y, pts[n - 1].x - pts[n - 2].x);
-      return { path: roundedPath(pts, 12), startAngle, endAngle, handles: [hStart, hMid, hEnd] };
+      return { path: roundedPath(pts, 12), startAngle, endAngle, handles };
     }
 
     // straight
@@ -956,7 +1007,9 @@ window.Board = (function () {
     } });
   }
 
-  function createArrow(fromId, toId, freeX, freeY) {
+  function createArrow(fromId, toId, freeX, freeY, opts) {
+    opts = opts || {};
+    const shape = opts.shape || (window.Settings ? window.Settings.arrowShape() : 'straight');
     const node = {
       id: window.Store.uid(),
       type: 'arrow',
@@ -971,7 +1024,9 @@ window.Board = (function () {
       lineStyle: 'solid',
       startCap: 'none',
       endCap: 'arrow',
-      shape: 'straight',
+      shape,
+      startAnch: opts.startAnch || null,
+      endAnch: opts.endAnch || null,
       createdBy: window.currentUser ? window.currentUser.uid : 'anon'
     };
     placeNode(node, false);
@@ -992,19 +1047,32 @@ window.Board = (function () {
       'stroke-linecap': 'round', 'pointer-events': 'none'
     });
     if (arrowLayer) arrowLayer.appendChild(preview);
-    arrowDraw = { fromId, start, cursor: start, preview };
+    arrowDraw = { fromId, start, cursor: start, preview, snap: null, hiEl: null };
     viewport.style.cursor = 'crosshair';
   }
 
   function updateArrowDraw(e) {
     if (!arrowDraw) return;
     const p = screenToWorld(e.clientX, e.clientY);
-    arrowDraw.cursor = p;
     const rf = rectOf(arrowDraw.fromId);
     const a = rf ? borderPoint(rf, p) : arrowDraw.start;
+
+    const snap = findSnapTarget(e.clientX, e.clientY, arrowDraw.fromId);
+    if (arrowDraw.hiEl && (!snap || arrowDraw.hiEl !== nodeEls.get(snap.id))) {
+      arrowDraw.hiEl.classList.remove('arrow-target');
+      arrowDraw.hiEl = null;
+    }
+    if (snap) {
+      arrowDraw.hiEl = nodeEls.get(snap.id) || null;
+      if (arrowDraw.hiEl) arrowDraw.hiEl.classList.add('arrow-target');
+    }
+    arrowDraw.snap = snap;
+    const end = snap ? snap.point : p;
+    arrowDraw.cursor = end;
+
     const pr = arrowDraw.preview;
     pr.setAttribute('x1', a.x); pr.setAttribute('y1', a.y);
-    pr.setAttribute('x2', p.x); pr.setAttribute('y2', p.y);
+    pr.setAttribute('x2', end.x); pr.setAttribute('y2', end.y);
   }
 
   // Перетаскивание ручек стрелки: изгиб (bend) и якоря начала/конца.
@@ -1092,24 +1160,35 @@ window.Board = (function () {
     const fromId = arrowDraw.fromId;
     const startPt = arrowDraw.start;
     const p = screenToWorld(e.clientX, e.clientY);
+    const recomputed = findSnapTarget(e.clientX, e.clientY, fromId);
+    let snap = recomputed || arrowDraw.snap;
+    if (arrowDraw.hiEl) arrowDraw.hiEl.classList.remove('arrow-target');
     if (arrowDraw.preview) arrowDraw.preview.remove();
     arrowDraw = null;
     viewport.style.cursor = '';
 
     const rf = rectOf(fromId);
-    const a = rf ? borderPoint(rf, p) : startPt;
-  // Слишком короткая стрелка — игнорируем (случайный клик по шарику).
-    if (Math.hypot(p.x - a.x, p.y - a.y) < 12) return;
+    const rawEnd = snap ? snap.point : p;
+    const a = rf ? borderPoint(rf, rawEnd) : startPt;
+    // Слишком короткая стрелка — игнорируем (случайный клик по шарику).
+    if (Math.hypot(rawEnd.x - a.x, rawEnd.y - a.y) < 12) return;
 
     let toId = null;
-    const targetEl = document.elementFromPoint(e.clientX, e.clientY);
-    const targetNodeEl = targetEl && targetEl.closest ? targetEl.closest('.canvas-node') : null;
-    if (targetNodeEl) {
-      const tid = targetNodeEl.dataset.id;
-      if (tid && tid !== fromId) toId = tid;
+    let endAnch = null;
+    if (snap) {
+      toId = snap.id;
+      const rect = snap.rect;
+      endAnch = { ux: snap.point.x - (rect.x + rect.w / 2), uy: snap.point.y - (rect.y + rect.h / 2) };
+    } else {
+      const targetEl = document.elementFromPoint(e.clientX, e.clientY);
+      const targetNodeEl = targetEl && targetEl.closest ? targetEl.closest('.canvas-node') : null;
+      if (targetNodeEl) {
+        const tid = targetNodeEl.dataset.id;
+        if (tid && tid !== fromId) toId = tid;
+      }
     }
 
-    createArrow(fromId, toId, p.x, p.y);
+    createArrow(fromId, toId, rawEnd.x, rawEnd.y, { endAnch });
     const newId = [...selectedIds][0];
     pushHistory({ undo: () => removeLocalAndRemote(newId) });
   }
@@ -1284,7 +1363,8 @@ window.Board = (function () {
     historyLock = true;
     snaps.forEach(s => removeLocalAndRemote(s.id));
     historyLock = false;
-    clearSelection();
+    selectedIds.clear();
+    syncSelection();
     pushHistory({
       undo: () => { snaps.forEach(s => placeNode({ ...s }, false)); setSelection(snaps.map(s => s.id)); }
     });
@@ -1303,6 +1383,100 @@ window.Board = (function () {
     created.forEach(n => placeNode(n, false));
     setSelection(created.map(n => n.id));
     pushHistory({ undo: () => created.forEach(n => removeLocalAndRemote(n.id)) });
+  }
+
+  // --- Выравнивание и распределение выделенных элементов ---
+
+  function alignableNodes() {
+    const list = [];
+    selectedIds.forEach(id => {
+      const n = nodes.get(id);
+      const el = nodeEls.get(id);
+      if (n && el && n.type !== 'arrow') list.push({ n, el });
+    });
+    return list;
+  }
+
+  function selectionBounds() {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    selectedIds.forEach(id => {
+      const n = nodes.get(id);
+      const el = nodeEls.get(id);
+      if (!n || !el || n.type === 'arrow') return;
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + (el.offsetWidth || 0));
+      maxY = Math.max(maxY, n.y + (el.offsetHeight || 0));
+    });
+    if (!isFinite(minX)) return null;
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+
+  function restorePositions(before) {
+    before.forEach(o => {
+      const nn = nodes.get(o.id);
+      const ne = nodeEls.get(o.id);
+      if (nn) { nn.x = o.x; nn.y = o.y; }
+      if (ne && nn) { ne.style.left = nn.x + 'px'; ne.style.top = nn.y + 'px'; }
+      if (projectId) window.Store.updateNode(projectId, o.id, { x: o.x, y: o.y }).catch(() => {});
+    });
+    updateSelectionBox();
+    refreshArrows();
+    if (window.ElementMenu) window.ElementMenu.update();
+  }
+
+  function alignSelection(mode) {
+    const list = alignableNodes();
+    if (list.length < 2) return;
+    const b = selectionBounds();
+    if (!b) return;
+    const before = list.map(({ n }) => ({ id: n.id, x: n.x, y: n.y }));
+    list.forEach(({ n, el }) => {
+      const w = el.offsetWidth || 0, h = el.offsetHeight || 0;
+      if (mode === 'left') n.x = Math.round(b.x);
+      else if (mode === 'center') n.x = Math.round(b.x + (b.w - w) / 2);
+      else if (mode === 'right') n.x = Math.round(b.x + b.w - w);
+      else if (mode === 'top') n.y = Math.round(b.y);
+      else if (mode === 'middle') n.y = Math.round(b.y + (b.h - h) / 2);
+      else if (mode === 'bottom') n.y = Math.round(b.y + b.h - h);
+      el.style.left = n.x + 'px';
+      el.style.top = n.y + 'px';
+      if (projectId) window.Store.updateNode(projectId, n.id, { x: n.x, y: n.y }).catch(handleError);
+    });
+    updateSelectionBox();
+    refreshArrows();
+    if (window.ElementMenu) window.ElementMenu.update();
+    pushHistory({ undo: () => restorePositions(before) });
+  }
+
+  function distributeSelection(axis) {
+    const list = alignableNodes();
+    if (list.length < 3) return;
+    const horiz = axis === 'h';
+    const before = list.map(({ n }) => ({ id: n.id, x: n.x, y: n.y }));
+    const items = list.map(({ n, el }) => ({
+      n, el,
+      size: (horiz ? el.offsetWidth : el.offsetHeight) || 0,
+      pos: horiz ? n.x : n.y
+    }));
+    items.sort((a, b) => a.pos - b.pos);
+    const first = items[0], last = items[items.length - 1];
+    const start = horiz ? first.n.x : first.n.y;
+    const end = horiz ? last.n.x + last.size : last.n.y + last.size;
+    const sum = items.reduce((s, it) => s + it.size, 0);
+    const gap = (end - start - sum) / (items.length - 1);
+    let cursor = start;
+    items.forEach(it => {
+      if (horiz) it.n.x = Math.round(cursor); else it.n.y = Math.round(cursor);
+      it.el.style.left = it.n.x + 'px';
+      it.el.style.top = it.n.y + 'px';
+      if (projectId) window.Store.updateNode(projectId, it.n.id, { x: it.n.x, y: it.n.y }).catch(handleError);
+      cursor += it.size + gap;
+    });
+    updateSelectionBox();
+    refreshArrows();
+    if (window.ElementMenu) window.ElementMenu.update();
+    pushHistory({ undo: () => restorePositions(before) });
   }
 
   // Сброс изображения к «оригинальному» размеру (с ограничением по стороне).
@@ -1540,12 +1714,11 @@ window.Board = (function () {
     viewport.addEventListener('dragover', onDragOver);
     viewport.addEventListener('drop', onDrop);
 
-    // Отключаем контекстное меню браузера (в т.ч. Яндекс) на холсте и элементах,
-    // но оставляем его в полях ввода (заголовок, текстовые элементы).
+    // Отключаем контекстное меню браузера (в т.ч. в Яндекс.Браузере) на холсте
+    // и элементах — вместо него показываем своё (см. js/contextmenu.js).
+    // В полях ввода (заголовок, поля модалок) оставляем нативное меню.
     document.addEventListener('contextmenu', (e) => {
       if (e.target.closest('input, textarea')) return;
-      const a = document.activeElement;
-      if (a && a.isContentEditable && a.contains(e.target)) return;
       e.preventDefault();
     });
 
@@ -2159,6 +2332,7 @@ window.Board = (function () {
   const ctx = {
     viewport: () => viewport,
     projectId: () => projectId,
+    worldToScreen,
     getNode: (id) => nodes.get(id),
     getEl: (id) => nodeEls.get(id) || arrowEls.get(id),
     singleId: () => (selectedIds.size === 1 ? [...selectedIds][0] : null),
@@ -2180,6 +2354,9 @@ window.Board = (function () {
     deleteSelected,
     resetImageSize,
     selectOnly,
+    selectionBounds,
+    alignSelection,
+    distributeSelection,
     consts: {
       FONT_FAMILIES, FONT_SIZES, TEXT_COLORS, TEXT_COLORS_LIGHT, ALIGN_ITEMS, DEFAULT_FONT_SIZE
     }
