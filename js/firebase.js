@@ -157,6 +157,8 @@
         data.lineStyle = node.lineStyle || 'solid';
         data.startCap = node.startCap || 'none';
         data.endCap = node.endCap || 'arrow';
+        data.shape = node.shape || 'straight';
+        if (node.bend) data.bend = node.bend;
       }
       await nodesCol(projectId).doc(node.id).set(data);
       await projectsCol().doc(projectId).update({ updatedAt: Date.now() }).catch(() => {});

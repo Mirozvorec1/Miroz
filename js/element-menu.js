@@ -34,6 +34,11 @@ window.ElementMenu = (function () {
     { value: 'circle', label: 'Круг' },
     { value: 'diamond', label: 'Ромб' }
   ];
+  const SHAPES = [
+    { value: 'straight', label: 'Прямая' },
+    { value: 'curved', label: 'Гибкая (360°)' },
+    { value: 'elbow', label: 'Гибкая (вручную)' }
+  ];
 
   function ctx() { return window.Board && window.Board.ctx; }
   function C() { return ctx().consts; }
@@ -65,17 +70,6 @@ window.ElementMenu = (function () {
   }
 
   function onRootClick(e) {
-    const arrowBtn = e.target.closest('[data-arrow]');
-    if (arrowBtn) {
-      const kind = arrowBtn.dataset.arrow;
-      const value = arrowBtn.dataset.value;
-      if (kind === 'color') ctx().setArrowStyle(nodeId, { color: value });
-      else if (kind === 'line') ctx().setArrowStyle(nodeId, { lineStyle: value });
-      else if (kind === 'start') ctx().setArrowStyle(nodeId, { startCap: value });
-      else if (kind === 'end') ctx().setArrowStyle(nodeId, { endCap: value });
-      return;
-    }
-
     if (e.target.closest('input')) return;
     const menuBtn = e.target.closest('[data-menu]');
     if (menuBtn) { toggleMenu(menuBtn); return; }
@@ -256,44 +250,64 @@ window.ElementMenu = (function () {
     const panel = document.createElement('div');
     panel.className = 'em-panel';
 
-    const colorBtn = document.createElement('button');
-    colorBtn.className = 'tt-btn';
-    colorBtn.title = 'Цвет линии';
-    colorBtn.innerHTML = '<span class="em-color-dot"></span><span class="tt-caret">▾</span>';
-    colorBtn.dataset.menu = 'arrow-color';
-    panel.appendChild(colorBtn);
-
+    // Цвет линии.
+    panel.appendChild(mkMenuBtn('arrow-color', 'Цвет линии', '<span class="em-color-dot"></span>'));
     const colorMenu = mkMenu('arrow-color');
     colorMenu.classList.add('am-colors');
     ARROW_COLORS.forEach(col => {
       const b = document.createElement('button');
       b.className = 'am-swatch';
-      b.dataset.arrow = 'color';
       b.dataset.value = col;
       b.title = col;
       b.style.background = col;
       colorMenu.appendChild(b);
     });
-    panel.appendChild(colorMenu);
+    root_appendLater(panel, colorMenu);
 
     panel.appendChild(sep());
 
-    LINE_STYLES.forEach(ls => panel.appendChild(mkArrowBtn('line', ls.value, ls.label, lineIcon(ls.dash))));
-    panel.appendChild(sep());
-    CAPS.forEach(c => panel.appendChild(mkArrowBtn('start', c.value, 'Начало: ' + c.label, capIcon(c.value, true))));
-    panel.appendChild(sep());
-    CAPS.forEach(c => panel.appendChild(mkArrowBtn('end', c.value, 'Конец: ' + c.label, capIcon(c.value, false))));
+    // Форма стрелки: прямая / гибкая с углами / гибкая дугой.
+    panel.appendChild(mkMenuBtn('arrow-shape', 'Форма', '<span data-role="shape">' + shapeIcon('straight') + '</span>'));
+    const shapeMenu = mkMenu('arrow-shape');
+    SHAPES.forEach(s => shapeMenu.appendChild(mkArrowMenuItem(s.value, s.label, shapeIcon(s.value))));
+    root_appendLater(panel, shapeMenu);
+
+    // Формат линии.
+    panel.appendChild(mkMenuBtn('arrow-line', 'Формат линии', '<span data-role="line">' + lineIcon('') + '</span>'));
+    const lineMenu = mkMenu('arrow-line');
+    LINE_STYLES.forEach(ls => lineMenu.appendChild(mkArrowMenuItem(ls.value, ls.label, lineIcon(ls.dash))));
+    root_appendLater(panel, lineMenu);
+
+    // Начало линии.
+    panel.appendChild(mkMenuBtn('arrow-start', 'Начало линии', '<span data-role="start">' + capIcon('none', true) + '</span>'));
+    const startMenu = mkMenu('arrow-start');
+    CAPS.forEach(c => startMenu.appendChild(mkArrowMenuItem(c.value, 'Начало: ' + c.label, capIcon(c.value, true))));
+    root_appendLater(panel, startMenu);
+
+    // Конец линии.
+    panel.appendChild(mkMenuBtn('arrow-end', 'Конец линии', '<span data-role="end">' + capIcon('arrow', false) + '</span>'));
+    const endMenu = mkMenu('arrow-end');
+    CAPS.forEach(c => endMenu.appendChild(mkArrowMenuItem(c.value, 'Конец: ' + c.label, capIcon(c.value, false))));
+    root_appendLater(panel, endMenu);
 
     return panel;
   }
 
-  function mkArrowBtn(kind, value, title, svg) {
+  function mkMenuBtn(name, title, inner) {
     const b = document.createElement('button');
     b.className = 'tt-btn';
-    b.dataset.arrow = kind;
-    b.dataset.value = value;
     b.title = title;
-    b.innerHTML = svg;
+    b.dataset.menu = name;
+    b.innerHTML = inner + '<span class="tt-caret">▾</span>';
+    return b;
+  }
+
+  function mkArrowMenuItem(value, label, icon) {
+    const b = document.createElement('button');
+    b.className = 'tt-menu__item';
+    b.dataset.value = value;
+    b.innerHTML = '<span class="tt-check">✓</span>' + icon + '<span class="tt-menu__label"></span>';
+    b.querySelector('.tt-menu__label').textContent = label;
     return b;
   }
 
@@ -305,16 +319,30 @@ window.ElementMenu = (function () {
 
   function updateArrowPanel(n) {
     if (deferredMenus.length) { deferredMenus.forEach(m => root.appendChild(m)); deferredMenus.length = 0; }
+    const color = n.color || '#1a1a1a';
+    const shape = n.shape || 'straight';
+    const line = n.lineStyle || 'solid';
+    const start = n.startCap || 'none';
+    const end = n.endCap || 'arrow';
+
     const dot = arrowPanel.querySelector('.em-color-dot');
-    if (dot) dot.style.background = n.color || '#1a1a1a';
-    arrowPanel.querySelectorAll('[data-arrow="color"]').forEach(b =>
-      b.classList.toggle('is-active', (n.color || '#1a1a1a') === b.dataset.value));
-    arrowPanel.querySelectorAll('[data-arrow="line"]').forEach(b =>
-      b.classList.toggle('is-active', (n.lineStyle || 'solid') === b.dataset.value));
-    arrowPanel.querySelectorAll('[data-arrow="start"]').forEach(b =>
-      b.classList.toggle('is-active', (n.startCap || 'none') === b.dataset.value));
-    arrowPanel.querySelectorAll('[data-arrow="end"]').forEach(b =>
-      b.classList.toggle('is-active', (n.endCap || 'arrow') === b.dataset.value));
+    if (dot) dot.style.background = color;
+
+    const setPreview = (role, svg) => {
+      const el = arrowPanel.querySelector('[data-role="' + role + '"]');
+      if (el) el.innerHTML = svg;
+    };
+    setPreview('shape', shapeIcon(shape));
+    const ls = LINE_STYLES.find(x => x.value === line) || LINE_STYLES[0];
+    setPreview('line', lineIcon(ls.dash));
+    setPreview('start', capIcon(start, true));
+    setPreview('end', capIcon(end, false));
+
+    markMenuItem('arrow-color', color);
+    markMenuItem('arrow-shape', shape);
+    markMenuItem('arrow-line', line);
+    markMenuItem('arrow-start', start);
+    markMenuItem('arrow-end', end);
   }
 
   // ---------- Иконки ----------
@@ -323,6 +351,17 @@ window.ElementMenu = (function () {
     const d = dash ? ' stroke-dasharray="' + dash + '"' : '';
     return '<svg width="22" height="14" viewBox="0 0 22 14" fill="none" stroke="currentColor" stroke-width="1.6" ' +
       'stroke-linecap="round"><line x1="1" y1="7" x2="21" y2="7"' + d + '/></svg>';
+  }
+
+  function shapeIcon(kind) {
+    const s = 'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"';
+    if (kind === 'elbow') {
+      return '<svg width="22" height="14" viewBox="0 0 22 14"><path d="M2 2 H11 V12 H20" ' + s + '/></svg>';
+    }
+    if (kind === 'curved') {
+      return '<svg width="22" height="14" viewBox="0 0 22 14"><path d="M2 2 C 11 2 11 12 20 12" ' + s + '/></svg>';
+    }
+    return '<svg width="22" height="14" viewBox="0 0 22 14"><path d="M2 12 L20 2" ' + s + '/></svg>';
   }
 
   function capIcon(kind, start) {
@@ -418,10 +457,17 @@ window.ElementMenu = (function () {
     const value = item.dataset.value;
     closeMenu();
     if (!nodeId || !name) return;
+    const c = ctx();
     if (name === 'color') setNodeStyle(nodeId, { color: value });
     else if (name === 'font') setNodeStyle(nodeId, { fontFamily: value });
     else if (name === 'align') setNodeStyle(nodeId, { align: value });
     else if (name === 'size') setNodeStyle(nodeId, { fontSize: Number(value) });
+    else if (name === 'arrow-color') c.setArrowStyle(nodeId, { color: value });
+    else if (name === 'arrow-shape') c.setArrowStyle(nodeId, { shape: value });
+    else if (name === 'arrow-line') c.setArrowStyle(nodeId, { lineStyle: value });
+    else if (name === 'arrow-start') c.setArrowStyle(nodeId, { startCap: value });
+    else if (name === 'arrow-end') c.setArrowStyle(nodeId, { endCap: value });
+    if (name && name.indexOf('arrow-') === 0) update();
   }
 
   function setLabel(role, text) {

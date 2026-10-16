@@ -506,6 +506,16 @@ html, body {
 .arrow { pointer-events: none; }
 .arrow__line { fill: none; }
 .arrow__hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
+.arrow__handle {
+  fill: var(--primary);
+  stroke: #fff;
+  stroke-width: 1.5;
+  pointer-events: none;
+  cursor: grab;
+}
+.arrow.is-selected .arrow__handle { pointer-events: all; }
+.arrow:not(.is-selected) .arrow__handle { display: none; }
+.arrow__handle:active { cursor: grabbing; }
 .arrow:hover .arrow__line, .arrow.is-selected .arrow__line { stroke-width: 2.5; }
 .sel-box--arrow .sel-handle,
 .sel-box--arrow .sel-ball { display: none; }

@@ -250,7 +250,7 @@ window.Board = (function () {
 
     if (node.type === 'arrow') {
       if (!local) { renderOrAdd(node); return; }
-      ['color', 'lineStyle', 'startCap', 'endCap', 'fromId', 'toId', 'x1', 'y1', 'x2', 'y2']
+      ['color', 'lineStyle', 'startCap', 'endCap', 'fromId', 'toId', 'x1', 'y1', 'x2', 'y2', 'shape', 'bend']
         .forEach(k => { if (node[k] !== undefined) local[k] = node[k]; });
       updateArrow(local);
       return;
@@ -710,6 +710,7 @@ window.Board = (function () {
   const SVGNS = 'http://www.w3.org/2000/svg';
   const ARROW_DEFAULT_COLOR = '#1a1a1a';
   let arrowDraw = null;   // { fromId, start, cursor, preview }
+  let arrowBend = null;   // { id, axis, startX, startY, base } — ручная подстройка изгиба
 
   function arrowDash(style) {
     switch (style) {
@@ -771,13 +772,90 @@ window.Board = (function () {
     group.appendChild(g);
   }
 
+  function unit(from, to) {
+    const dx = to.x - from.x, dy = to.y - from.y;
+    const len = Math.hypot(dx, dy) || 1;
+    return { x: dx / len, y: dy / len };
+  }
+
+  // Ломаная с скруглёнными углами (для формы «гибкая с прямыми углами»).
+  function roundedPath(pts, r) {
+    if (pts.length < 3) {
+      const a = pts[0], b = pts[pts.length - 1];
+      return 'M ' + a.x + ' ' + a.y + ' L ' + b.x + ' ' + b.y;
+    }
+    let d = 'M ' + pts[0].x + ' ' + pts[0].y;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1];
+      const vIn = unit(p1, p0), vOut = unit(p1, p2);
+      const lenIn = Math.hypot(p0.x - p1.x, p0.y - p1.y) / 2;
+      const lenOut = Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2;
+      const rIn = Math.min(r, lenIn), rOut = Math.min(r, lenOut);
+      const a = { x: p1.x + vIn.x * rIn, y: p1.y + vIn.y * rIn };
+      const b = { x: p1.x + vOut.x * rOut, y: p1.y + vOut.y * rOut };
+      d += ' L ' + a.x + ' ' + a.y + ' Q ' + p1.x + ' ' + p1.y + ' ' + b.x + ' ' + b.y;
+    }
+    const last = pts[pts.length - 1];
+    d += ' L ' + last.x + ' ' + last.y;
+    return d;
+  }
+
+  // Геометрия стрелки по её форме. Возвращает path, углы наконечников
+  // и (для формы «elbow») положение ручки для ручной подстройки изгиба.
+  function arrowGeometry(node) {
+    const e = arrowEndpoints(node);
+    const ax = e.x1, ay = e.y1, bx = e.x2, by = e.y2;
+    const dx = bx - ax, dy = by - ay;
+    const shape = node.shape || 'straight';
+
+    if (shape === 'curved') {
+      let c1, c2, ang;
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        c1 = { x: ax + dx * 0.5, y: ay };
+        c2 = { x: bx - dx * 0.5, y: by };
+        ang = dx >= 0 ? 0 : Math.PI;
+      } else {
+        c1 = { x: ax, y: ay + dy * 0.5 };
+        c2 = { x: bx, y: by - dy * 0.5 };
+        ang = dy >= 0 ? Math.PI / 2 : -Math.PI / 2;
+      }
+      return {
+        path: 'M ' + ax + ' ' + ay + ' C ' + c1.x + ' ' + c1.y + ' ' + c2.x + ' ' + c2.y + ' ' + bx + ' ' + by,
+        startAngle: ang, endAngle: ang, handle: null
+      };
+    }
+
+    if (shape === 'elbow') {
+      const bend = node.bend || 0;
+      let pts, handle;
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        const midX = (ax + bx) / 2 + bend;
+        pts = [{ x: ax, y: ay }, { x: midX, y: ay }, { x: midX, y: by }, { x: bx, y: by }];
+        handle = { x: midX, y: (ay + by) / 2, axis: 'x' };
+      } else {
+        const midY = (ay + by) / 2 + bend;
+        pts = [{ x: ax, y: ay }, { x: ax, y: midY }, { x: bx, y: midY }, { x: bx, y: by }];
+        handle = { x: (ax + bx) / 2, y: midY, axis: 'y' };
+      }
+      const startAngle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
+      const n = pts.length;
+      const endAngle = Math.atan2(pts[n - 1].y - pts[n - 2].y, pts[n - 1].x - pts[n - 2].x);
+      return { path: roundedPath(pts, 12), startAngle, endAngle, handle };
+    }
+
+    // straight
+    const ang = Math.atan2(dy, dx);
+    return { path: 'M ' + ax + ' ' + ay + ' L ' + bx + ' ' + by, startAngle: ang, endAngle: ang, handle: null };
+  }
+
   function renderArrow(node) {
     if (!arrowLayer || arrowEls.has(node.id)) return;
     const g = svgEl('g', { class: 'arrow' });
     g.dataset.id = node.id;
-    g.appendChild(svgEl('line', { class: 'arrow__line' }));
-    g.appendChild(svgEl('line', { class: 'arrow__hit' }));
+    g.appendChild(svgEl('path', { class: 'arrow__line' }));
+    g.appendChild(svgEl('path', { class: 'arrow__hit' }));
     g.appendChild(svgEl('g', { class: 'arrow__caps' }));
+    g.appendChild(svgEl('circle', { class: 'arrow__handle', r: 6 }));
     arrowLayer.appendChild(g);
     arrowEls.set(node.id, g);
     updateArrow(node);
@@ -786,24 +864,35 @@ window.Board = (function () {
   function updateArrow(node) {
     const g = arrowEls.get(node.id);
     if (!g) return;
-    const e = arrowEndpoints(node);
+    const geo = arrowGeometry(node);
     const color = node.color || ARROW_DEFAULT_COLOR;
     const line = g.querySelector('.arrow__line');
     const hit = g.querySelector('.arrow__hit');
-    [line, hit].forEach(l => {
-      l.setAttribute('x1', e.x1); l.setAttribute('y1', e.y1);
-      l.setAttribute('x2', e.x2); l.setAttribute('y2', e.y2);
-    });
+    [line, hit].forEach(p => p.setAttribute('d', geo.path));
     line.setAttribute('stroke', color);
     line.setAttribute('stroke-width', 1.5);
     line.setAttribute('stroke-linecap', 'round');
+    line.setAttribute('stroke-linejoin', 'round');
+    line.setAttribute('fill', 'none');
     line.setAttribute('stroke-dasharray', arrowDash(node.lineStyle));
 
     const caps = g.querySelector('.arrow__caps');
     while (caps.firstChild) caps.removeChild(caps.firstChild);
-    const angle = Math.atan2(e.y2 - e.y1, e.x2 - e.x1);
-    addCap(caps, e.x1, e.y1, angle + Math.PI, node.startCap || 'none', color);
-    addCap(caps, e.x2, e.y2, angle, node.endCap || 'arrow', color);
+    const e = arrowEndpoints(node);
+    addCap(caps, e.x1, e.y1, geo.startAngle + Math.PI, node.startCap || 'none', color);
+    addCap(caps, e.x2, e.y2, geo.endAngle, node.endCap || 'arrow', color);
+
+    const handle = g.querySelector('.arrow__handle');
+    if (handle) {
+      if (geo.handle) {
+        handle.setAttribute('cx', geo.handle.x);
+        handle.setAttribute('cy', geo.handle.y);
+        handle.setAttribute('data-axis', geo.handle.axis);
+        handle.style.display = '';
+      } else {
+        handle.style.display = 'none';
+      }
+    }
     g.classList.toggle('is-selected', selectedIds.has(node.id));
   }
 
@@ -849,6 +938,7 @@ window.Board = (function () {
       lineStyle: 'solid',
       startCap: 'none',
       endCap: 'arrow',
+      shape: 'straight',
       createdBy: window.currentUser ? window.currentUser.uid : 'anon'
     };
     placeNode(node, false);
@@ -882,6 +972,52 @@ window.Board = (function () {
     const pr = arrowDraw.preview;
     pr.setAttribute('x1', a.x); pr.setAttribute('y1', a.y);
     pr.setAttribute('x2', p.x); pr.setAttribute('y2', p.y);
+  }
+
+  // Ручная подстройка изгиба «гибкой» стрелки (перетаскивание ручки).
+  function startArrowBend(e, id) {
+    const n = nodes.get(id);
+    const g = arrowEls.get(id);
+    if (!n || !g) return;
+    const handle = g.querySelector('.arrow__handle');
+    e.preventDefault();
+    e.stopPropagation();
+    arrowBend = {
+      id, axis: (handle && handle.getAttribute('data-axis')) || 'x',
+      startX: e.clientX, startY: e.clientY, base: n.bend || 0
+    };
+  }
+
+  function updateArrowBend(e) {
+    const r = arrowBend;
+    const n = nodes.get(r.id);
+    if (!n) return;
+    const d = r.axis === 'y'
+      ? (e.clientY - r.startY) / view.scale
+      : (e.clientX - r.startX) / view.scale;
+    n.bend = Math.round(r.base + d);
+    updateArrow(n);
+  }
+
+  function endArrowBend() {
+    if (!arrowBend) return;
+    const r = arrowBend;
+    arrowBend = null;
+    const n = nodes.get(r.id);
+    if (!n) return;
+    const bend = n.bend || 0;
+    n.bend = r.base;
+    updateArrow(n);
+    const applyBend = (val) => {
+      const nn = nodes.get(r.id);
+      if (!nn) return;
+      nn.bend = val;
+      updateArrow(nn);
+      if (projectId) window.Store.updateNode(projectId, r.id, { bend: val }).catch(() => {});
+    };
+    if (bend === (r.base || 0)) return;
+    applyBend(bend);
+    pushHistory({ undo: () => applyBend(r.base) });
   }
 
   function finishArrowDraw(e) {
@@ -1042,7 +1178,8 @@ window.Board = (function () {
       color: node.color, align: node.align,
       fromId: node.fromId, toId: node.toId,
       x1: node.x1, y1: node.y1, x2: node.x2, y2: node.y2,
-      lineStyle: node.lineStyle, startCap: node.startCap, endCap: node.endCap
+      lineStyle: node.lineStyle, startCap: node.startCap, endCap: node.endCap,
+      shape: node.shape, bend: node.bend
     };
   }
 
@@ -1502,6 +1639,12 @@ window.Board = (function () {
       return;
     }
 
+    const aHandle = e.target.closest('.arrow__handle');
+    if (aHandle && e.button === 0) {
+      const ag = aHandle.closest('.arrow');
+      if (ag && ag.dataset.id) { startArrowBend(e, ag.dataset.id); return; }
+    }
+
     if (e.button === 1) { startPan(e); return; }   // СКМ — перемещение доски
     if (e.button === 2) { maybeEditFromRmb(e); return; } // ПКМ: выделить / двойной ПКМ — правка
     if (e.button !== 0) return;
@@ -1760,6 +1903,7 @@ window.Board = (function () {
   }
 
   function onMouseMove(e) {
+    if (arrowBend) { updateArrowBend(e); return; }
     if (arrowDraw) { updateArrowDraw(e); return; }
     if (resizing) { doResize(e); return; }
     if (marquee) { updateMarquee(e); return; }
@@ -1812,6 +1956,7 @@ window.Board = (function () {
   }
 
   function onMouseUp(e) {
+    if (arrowBend) { endArrowBend(); return; }
     if (arrowDraw) { finishArrowDraw(e); return; }
     if (resizing) { endResize(); return; }
     if (marquee) { endMarquee(); return; }
@@ -1876,7 +2021,12 @@ window.Board = (function () {
     }
     if (ctrl && (e.key === 'c' || e.key === 'C' || e.key === 'с' || e.key === 'С')) { copySelected(); return; }
     if (ctrl && (e.key === 'x' || e.key === 'X' || e.key === 'ч' || e.key === 'Ч')) { cutSelected(); return; }
-    if (ctrl && (e.key === 'v' || e.key === 'V' || e.key === 'м' || e.key === 'М')) { e.preventDefault(); pasteClipboard(); return; }
+    if (ctrl && (e.key === 'v' || e.key === 'V' || e.key === 'м' || e.key === 'М')) {
+      // Внутренняя вставка (скопированные элементы) — только если буфер не пуст.
+      // Иначе не перехватываем: пусть сработает системный paste (внешний текст/картинки).
+      if (clipboard.length) { e.preventDefault(); pasteClipboard(); }
+      return;
+    }
     if (ctrl && (e.key === 'a' || e.key === 'A' || e.key === 'ф' || e.key === 'Ф')) {
       e.preventDefault();
       setSelection([...nodes.keys()].filter(id => !isLockedByOther(id)));
