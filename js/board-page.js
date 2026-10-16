@@ -16,6 +16,7 @@
     if (!projectId) { goHome(); return; }
 
     window.Board.init();
+    if (window.ContextMenu && window.ContextMenu.init) window.ContextMenu.init();
 
     // Выпадающее меню (☰) с пунктом "В меню".
     const menuBtn = document.getElementById('btn-menu');

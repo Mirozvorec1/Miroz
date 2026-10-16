@@ -7,14 +7,8 @@
 window.Board = (function () {
   let viewport, world;
   let gridEl = null;   // фон-сетка (живёт в viewport, тайлится бесконечно)
+  let arrowLayer = null; // SVG-слой стрелок-коннекторов
   let selBox = null;   // рамка вокруг группы выделенных элементов
-  let textToolbar = null; // плавающая панель форматирования текста
-  let toolbarNodeId = null;
-  let toolbarMenu = null; // открытое подменю панели
-  let savedRange = null;  // сохранённое выделение внутри текста
-  let pickerEls = null;   // узлы hex-пикера цвета
-  let pickerHsv = { h: 0, s: 0, v: 0.9 };
-  let pickerDragging = false;
   let projectId = null;
   let unsubscribe = null;
 
@@ -50,6 +44,7 @@ window.Board = (function () {
 
   const nodes = new Map();      // id -> данные узла
   const nodeEls = new Map();    // id -> DOM-элемент
+  const arrowEls = new Map();   // id -> SVG-группа стрелки
   const draggingIds = new Set(); // узлы, которые сейчас тащим локально
   const textTimers = new Map();  // id -> таймер отложенной записи текста
   const selectedIds = new Set(); // выделенные элементы
@@ -118,7 +113,7 @@ window.Board = (function () {
     gridEl = world.querySelector('.canvas-grid');
     if (gridEl && gridEl.parentNode === world) viewport.insertBefore(gridEl, world);
 
-    // Рамка вокруг выделения + угловые ручки изменения размера.
+    // Рамка вокруг выделения + ручки изменения размера + шарики-коннекторы.
     selBox = document.createElement('div');
     selBox.className = 'sel-box hidden';
     selBox.innerHTML =
@@ -127,20 +122,24 @@ window.Board = (function () {
       '<div class="sel-handle" data-corner="sw"></div>' +
       '<div class="sel-handle" data-corner="se"></div>' +
       '<div class="sel-handle sel-handle--side" data-corner="e"></div>' +
-      '<div class="sel-handle sel-handle--side" data-corner="w"></div>';
+      '<div class="sel-handle sel-handle--side" data-corner="w"></div>' +
+      '<div class="sel-handle sel-handle--h" data-corner="n"></div>' +
+      '<div class="sel-handle sel-handle--h" data-corner="s"></div>' +
+      '<div class="sel-ball" data-ball="n"></div>' +
+      '<div class="sel-ball" data-ball="e"></div>' +
+      '<div class="sel-ball" data-ball="s"></div>' +
+      '<div class="sel-ball" data-ball="w"></div>';
     viewport.appendChild(selBox);
 
-    buildTextToolbar();
+    // Слой стрелок-коннекторов (внутри world — трансформируется вместе с видом).
+    arrowLayer = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    arrowLayer.setAttribute('class', 'arrow-layer');
+    world.appendChild(arrowLayer);
+
+    if (window.ElementMenu && window.ElementMenu.init) window.ElementMenu.init();
 
     const hint = document.getElementById('canvas-hint');
     if (hint) hint.textContent = 'ЛКМ — выделение и рамка, повторный клик — правка, СКМ — перемещение доски';
-
-    // Сохраняем выделение внутри редактируемого текста, чтобы панель
-    // форматирования не «теряла» его при кликах по кнопкам.
-    document.addEventListener('selectionchange', () => {
-      const el = toolbarNodeId && nodeEls.get(toolbarNodeId);
-      if (el && document.activeElement === el) saveSelection();
-    });
 
     bindEvents();
   }
@@ -157,6 +156,7 @@ window.Board = (function () {
     if (zv) zv.textContent = Math.round(view.scale * 100) + '%';
     updateSelectionBox();
     updateTextToolbar();
+    refreshArrows();
   }
 
   function scheduleViewSave() {
@@ -229,7 +229,6 @@ window.Board = (function () {
     lockState = { owners: new Map(), colorOf: new Map(), nameOf: new Map(), self: null };
     latestPresence = null;
     hideTextToolbar();
-    savedRange = null;
     selectedIds.clear();
     history.length = 0;
     dragGroup = null;
@@ -242,11 +241,21 @@ window.Board = (function () {
   function renderOrAdd(node) {
     if (nodes.has(node.id)) return;
     nodes.set(node.id, node);
+    if (node.type === 'arrow') { renderArrow(node); return; }
     renderNode(node);
   }
 
   function applyRemoteNode(node) {
     const local = nodes.get(node.id);
+
+    if (node.type === 'arrow') {
+      if (!local) { renderOrAdd(node); return; }
+      ['color', 'lineStyle', 'startCap', 'endCap', 'fromId', 'toId', 'x1', 'y1', 'x2', 'y2']
+        .forEach(k => { if (node[k] !== undefined) local[k] = node[k]; });
+      updateArrow(local);
+      return;
+    }
+
     const el = nodeEls.get(node.id);
     if (!local || !el) { renderOrAdd(node); return; }
 
@@ -284,14 +293,19 @@ window.Board = (function () {
       local.text = node.text;
       el.innerHTML = sanitizeHtml(node.text || '');
     }
+    refreshArrows();
   }
 
   function removeNodeById(id) {
     const el = nodeEls.get(id);
     if (el) el.remove();
     nodeEls.delete(id);
+    removeArrowEl(id);
+    const existed = nodes.get(id);
     nodes.delete(id);
     selectedIds.delete(id);
+    // Стрелки, привязанные к удалённому элементу, тоже убираем.
+    if (existed && existed.type !== 'arrow') cleanupArrowsFor(id);
   }
 
   function renderNode(node) {
@@ -388,6 +402,77 @@ window.Board = (function () {
     return tmp.innerHTML;
   }
 
+  // Более щадящая очистка для вставки со сторонних сайтов: сохраняем базовое
+  // оформление (теги + безопасные инлайн-стили), выкидываем скрипты/опасные URL.
+  const PASTE_TAGS = new Set([
+    'p', 'div', 'br', 'span', 'b', 'strong', 'i', 'em', 'u', 's', 'strike',
+    'del', 'ins', 'mark', 'sub', 'sup', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'ul', 'ol', 'li', 'a', 'blockquote', 'pre', 'code', 'hr', 'small', 'big',
+    'font', 'center', 'table', 'thead', 'tbody', 'tr', 'td', 'th'
+  ]);
+  const PASTE_STYLE_PROPS = new Set([
+    'font-weight', 'font-style', 'text-decoration', 'text-decoration-line',
+    'text-align', 'color', 'background-color', 'font-family', 'font-size',
+    'line-height', 'vertical-align', 'white-space'
+  ]);
+
+  function sanitizePastedHtml(html) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html == null ? '' : String(html);
+    tmp.querySelectorAll('script, style, iframe, object, embed, link, meta, form, ' +
+      'input, textarea, select, button, svg, canvas, video, audio, picture, source, img, noscript')
+      .forEach(n => n.remove());
+
+    const walker = document.createTreeWalker(tmp, NodeFilter.SHOW_ELEMENT);
+    const unwrap = [];
+    while (walker.nextNode()) {
+      const el = walker.currentNode;
+      const tag = el.tagName.toLowerCase();
+
+      if (tag === 'a') {
+        const href = el.getAttribute('href') || '';
+        if (!/^(https?:|mailto:|\/|#)/i.test(href)) el.removeAttribute('href');
+        else { el.setAttribute('target', '_blank'); el.setAttribute('rel', 'noopener noreferrer'); }
+      }
+
+      const style = el.getAttribute('style');
+      if (style) {
+        const kept = style.split(';').map(s => s.trim()).filter(Boolean).filter(decl => {
+          const prop = decl.split(':')[0].trim().toLowerCase();
+          return PASTE_STYLE_PROPS.has(prop) && !/url\s*\(|expression|javascript:/i.test(decl);
+        });
+        if (kept.length) el.setAttribute('style', kept.join('; '));
+        else el.removeAttribute('style');
+      }
+
+      if (tag === 'font') {
+        let extra = '';
+        const color = el.getAttribute('color') || '';
+        const size = el.getAttribute('size') || '';
+        if (color && /^#?[0-9a-f]+$/i.test(color)) extra += 'color:' + (color[0] === '#' ? color : '#' + color) + ';';
+        if (size && /^\d+$/.test(size)) extra += 'font-size:' + Math.round(Number(size) * 16 / 3) + 'px;';
+        if (extra) el.setAttribute('style', (el.getAttribute('style') || '') + ';' + extra);
+      }
+
+      Array.prototype.slice.call(el.attributes).forEach(a => {
+        const name = a.name.toLowerCase();
+        if (name === 'style' || name === 'colspan' || name === 'rowspan') return;
+        if (tag === 'a' && (name === 'href' || name === 'target' || name === 'rel')) return;
+        el.removeAttribute(a.name);
+      });
+
+      if (!PASTE_TAGS.has(tag)) unwrap.push(el);
+    }
+
+    unwrap.forEach(el => {
+      const p = el.parentNode;
+      if (!p) return;
+      while (el.firstChild) p.insertBefore(el.firstChild, el);
+      p.removeChild(el);
+    });
+    return tmp.innerHTML;
+  }
+
   function scheduleTextSave(id) {
     if (!projectId) return;
     clearTimeout(textTimers.get(id));
@@ -401,7 +486,8 @@ window.Board = (function () {
 
   function placeNode(node, focus) {
     nodes.set(node.id, node);
-    renderNode(node);
+    if (node.type === 'arrow') renderArrow(node);
+    else renderNode(node);
     if (projectId) window.Store.addNode(projectId, node).catch(handleError);
     if (focus) {
       const el = nodeEls.get(node.id);
@@ -443,8 +529,8 @@ window.Board = (function () {
   // а каждый узел — отдельный документ).
 
   const IMG_DISPLAY_MAX = 420;     // размер на доске по умолчанию (длинная сторона)
-  const IMG_SOURCE_MAX = 1600;     // максимум сохраняемой стороны
-  const IMG_BUDGET = 700000;       // бюджет длины data URL (символы ~ байты)
+  const IMG_SOURCE_MAX = 1400;     // максимум сохраняемой стороны
+  const IMG_BUDGET = 600000;       // бюджет длины data URL (лимит Firestore ~1 МиБ)
 
   let webpOk = null;
 
@@ -567,14 +653,19 @@ window.Board = (function () {
       el.classList.toggle('is-selected', on);
       el.classList.toggle('is-in-group', on && multi);
     });
+    arrowEls.forEach((g, id) => g.classList.toggle('is-selected', selectedIds.has(id)));
     updateSelectionBox();
     updateTextToolbar();
   }
 
-  // Рамка вокруг выделения (одиночного или группы) с угловыми ручками.
+  // Рамка вокруг выделения (одиночного или группы) с ручками.
   function updateSelectionBox() {
     if (!selBox) return;
     if (selectedIds.size === 0) { selBox.classList.add('hidden'); return; }
+
+    const only = selectedIds.size === 1 ? nodes.get([...selectedIds][0]) : null;
+    if (only && only.type === 'arrow') { selBox.classList.add('hidden'); return; }
+    if (only && only.type === 'image') { /* картинку тоже можно тянуть за ручки */ }
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     selectedIds.forEach(id => {
@@ -598,547 +689,232 @@ window.Board = (function () {
     selBox.style.width = (b.x - a.x) + 'px';
     selBox.style.height = (b.y - a.y) + 'px';
     selBox.classList.toggle('sel-box--single', single);
+    selBox.classList.toggle('sel-box--text', !!(single && only && only.type === 'text'));
     selBox.classList.remove('hidden');
+    refreshArrows();
   }
 
-  // --- Плавающая панель форматирования текста ---
+  // --- Тонкие обёртки панели элемента (текст/стрелка) — в js/element-menu.js ---
 
-  function buildTextToolbar() {
-    textToolbar = document.createElement('div');
-    textToolbar.className = 'text-toolbar hidden';
-    textToolbar.innerHTML =
-      '<button class="tt-btn" data-menu="color" title="Цвет текста"><span class="tt-dot"></span><span class="tt-caret">▾</span></button>' +
-      '<button class="tt-btn" data-menu="font" title="Шрифт"><span class="tt-label" data-role="font">Simple</span><span class="tt-caret">▾</span></button>' +
-      '<button class="tt-btn" data-menu="size" title="Размер текста"><span class="tt-label" data-role="size">Small</span><span class="tt-caret">▾</span></button>' +
-      '<span class="tt-sep"></span>' +
-      '<button class="tt-btn" data-cmd="bold" title="Жирный"><b>B</b></button>' +
-      '<button class="tt-btn" data-cmd="italic" title="Курсив"><i>I</i></button>' +
-      '<button class="tt-btn" data-cmd="strikeThrough" title="Зачёркнутый"><s>S</s></button>' +
-      '<button class="tt-btn" data-cmd="link" title="Ссылка">🔗</button>' +
-      '<button class="tt-btn" data-cmd="insertUnorderedList" title="Маркированный список">☰</button>' +
-      '<button class="tt-btn" data-cmd="insertOrderedList" title="Нумерованный список">1.</button>' +
-      '<span class="tt-sep"></span>' +
-      '<button class="tt-btn" data-menu="align" title="Выравнивание"><span class="tt-label" data-role="align">⯇</span><span class="tt-caret">▾</span></button>';
+  function updateTextToolbar() { if (window.ElementMenu) window.ElementMenu.update(); }
+  function hideTextToolbar() { if (window.ElementMenu) window.ElementMenu.hide(); }
+  function closeToolbarMenu() { if (window.ElementMenu) window.ElementMenu.closeMenu(); }
 
-    // Меню шрифта (с предпросмотром каждого шрифта).
-    const fontMenu = mkMenu('font');
-    FONT_FAMILIES.forEach(f => {
-      const b = mkMenuItem(f.label, f.value);
-      b.style.fontFamily = f.value || '';
-      fontMenu.appendChild(b);
-    });
-
-    // Меню размера: заготовки + ручной ввод.
-    const sizeMenu = mkMenu('size');
-    FONT_SIZES.forEach(s => sizeMenu.appendChild(mkMenuItem(s.label, String(s.value))));
-    const divider = document.createElement('div');
-    divider.className = 'tt-divider';
-    sizeMenu.appendChild(divider);
-    const sizeInput = document.createElement('input');
-    sizeInput.type = 'number';
-    sizeInput.min = '6';
-    sizeInput.max = '400';
-    sizeInput.className = 'tt-num';
-    sizeInput.placeholder = 'px';
-    sizeInput.addEventListener('focus', () => { sizeInput._before = captureStyle(toolbarNodeId); });
-    sizeInput.addEventListener('input', () => {
-      if (!toolbarNodeId) return;
-      const px = Math.round(Number(sizeInput.value));
-      if (isFinite(px) && px >= 6 && px <= 400) setNodeStyle(toolbarNodeId, { fontSize: px }, true);
-    });
-    sizeInput.addEventListener('change', () => { pushStyleHistory(toolbarNodeId, sizeInput._before); });
-    sizeMenu.appendChild(sizeInput);
-
-    // Меню цвета: hex-пикер (пипетка, HEX-поле, полоса тона, квадрат SV) + палитра.
-    const colorMenu = mkMenu('color');
-    colorMenu.classList.add('tt-picker');
-    colorMenu.appendChild(buildColorPicker());
-    const swatches = document.createElement('div');
-    swatches.className = 'tt-swatches';
-    TEXT_COLORS.concat(TEXT_COLORS_LIGHT).forEach(c => {
-      const b = document.createElement('button');
-      b.className = 'tt-swatch-btn';
-      b.dataset.value = c;
-      b.title = c;
-      b.innerHTML = '<span class="tt-swatch" style="background:' + c + '"></span>';
-      swatches.appendChild(b);
-    });
-    colorMenu.appendChild(swatches);
-
-    // Меню выравнивания (пункты с иконками).
-    const alignMenu = mkMenu('align');
-    ALIGN_ITEMS.forEach(a => alignMenu.appendChild(mkAlignItem(a)));
-
-    [fontMenu, sizeMenu, colorMenu, alignMenu].forEach(m => textToolbar.appendChild(m));
-
-    // Клик по кнопкам не должен красть фокус/выделение у текста.
-    textToolbar.addEventListener('mousedown', (e) => {
-      if (e.target.closest('button')) e.preventDefault();
-    });
-
-    textToolbar.addEventListener('click', (e) => {
-      if (e.target.closest('input')) return;
-      const menuBtn = e.target.closest('[data-menu]');
-      if (menuBtn) { toggleToolbarMenu(menuBtn); return; }
-
-      const item = e.target.closest('[data-value]');
-      if (item) { pickToolbarMenu(item); return; }
-
-      const cmdBtn = e.target.closest('[data-cmd]');
-      if (cmdBtn) {
-        const cmd = cmdBtn.dataset.cmd;
-        if (cmd === 'link') {
-          saveSelection();
-          const url = prompt('Ссылка (URL):', 'https://');
-          if (url) runTextCommand('createLink', url);
-          return;
-        }
-        runTextCommand(cmd);
-      }
-    });
-
-    viewport.appendChild(textToolbar);
-  }
-
-  function mkMenu(name) {
-    const menu = document.createElement('div');
-    menu.className = 'tt-menu hidden';
-    menu.dataset.menuFor = name;
-    return menu;
-  }
-
-  function mkMenuItem(label, value) {
-    const b = document.createElement('button');
-    b.className = 'tt-menu__item';
-    b.dataset.value = value;
-    b.innerHTML = '<span class="tt-check">✓</span><span class="tt-menu__label"></span>';
-    b.querySelector('.tt-menu__label').textContent = label;
-    return b;
-  }
-
-  function markMenuItem(name, value) {
-    const menu = textToolbar && textToolbar.querySelector('.tt-menu[data-menu-for="' + name + '"]');
-    if (!menu) return;
-    menu.querySelectorAll('[data-value]').forEach(b =>
-      b.classList.toggle('is-active', b.dataset.value === String(value)));
-  }
-
-  // --- Иконки выравнивания ---
-
-  function alignSvg(kind) {
-    const W = 18, full = 14, short = 9, x0 = 2;
-    const widths = [full, short, full, short];
-    let bars = '';
-    [3, 7, 11, 15].forEach((y, i) => {
-      const w = kind === 'justify' ? full : widths[i];
-      let x = x0;
-      if (kind === 'center') x = (W - w) / 2;
-      else if (kind === 'right') x = W - x0 - w;
-      bars += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="2" rx="1"/>';
-    });
-    return '<svg class="tt-align-ico" viewBox="0 0 18 18" fill="currentColor">' + bars + '</svg>';
-  }
-
-  function mkAlignItem(item) {
-    const b = document.createElement('button');
-    b.className = 'tt-menu__item';
-    b.dataset.value = item.value;
-    b.innerHTML = '<span class="tt-check">✓</span>' + alignSvg(item.value) +
-      '<span class="tt-menu__label"></span>';
-    b.querySelector('.tt-menu__label').textContent = item.label;
-    return b;
-  }
-
-  // --- Hex-пикер цвета ---
-
-  function clamp01(x) { return Math.min(1, Math.max(0, x)); }
-
-  function normalizeHex(str) {
-    if (!str) return null;
-    let s = String(str).trim().replace(/^#/, '');
-    if (/^[0-9a-fA-F]{3}$/.test(s)) s = s.split('').map(c => c + c).join('');
-    if (!/^[0-9a-fA-F]{6}$/.test(s)) return null;
-    return '#' + s.toLowerCase();
-  }
-
-  function hsvToHex(h, s, v) {
-    s = clamp01(s); v = clamp01(v);
-    const c = v * s;
-    const hp = (((h % 360) + 360) % 360) / 60;
-    const x = c * (1 - Math.abs((hp % 2) - 1));
-    let r = 0, g = 0, b = 0;
-    if (hp < 1) { r = c; g = x; }
-    else if (hp < 2) { r = x; g = c; }
-    else if (hp < 3) { g = c; b = x; }
-    else if (hp < 4) { g = x; b = c; }
-    else if (hp < 5) { r = x; b = c; }
-    else { r = c; b = x; }
-    const m = v - c;
-    const to = n => Math.round((n + m) * 255).toString(16).padStart(2, '0');
-    return '#' + to(r) + to(g) + to(b);
-  }
-
-  function hexToHsv(hex) {
-    const n = normalizeHex(hex) || '#000000';
-    const r = parseInt(n.slice(1, 3), 16) / 255;
-    const g = parseInt(n.slice(3, 5), 16) / 255;
-    const b = parseInt(n.slice(5, 7), 16) / 255;
-    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
-    let h = 0;
-    if (d) {
-      if (max === r) h = ((g - b) / d) % 6;
-      else if (max === g) h = (b - r) / d + 2;
-      else h = (r - g) / d + 4;
-      h *= 60;
-      if (h < 0) h += 360;
-    }
-    return { h, s: max ? d / max : 0, v: max };
-  }
-
-  // Приводим rgb(...) в строках к hex (браузер любит возвращать rgb).
   function rgbToHex(str) {
     return String(str).replace(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)[^)]*\)/gi, (m, r, g, b) =>
       '#' + [r, g, b].map(n => Number(n).toString(16).padStart(2, '0')).join(''));
   }
 
-  function buildColorPicker() {
-    const wrap = document.createElement('div');
-    wrap.className = 'tt-picker__inner';
+  // --- Стрелки-коннекторы ---
 
-    const top = document.createElement('div');
-    top.className = 'tt-picker__top';
-    const eye = document.createElement('button');
-    eye.type = 'button';
-    eye.className = 'tt-eye';
-    eye.title = 'Пипетка';
-    eye.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
-      'stroke-linecap="round" stroke-linejoin="round"><path d="M15 4l5 5-9 9-5 1 1-5z"/>' +
-      '<path d="M13 6l5 5"/><path d="M4 20l3.5-3.5"/></svg>';
-    eye.addEventListener('click', pickWithEyedropper);
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const ARROW_DEFAULT_COLOR = '#1a1a1a';
+  let arrowDraw = null;   // { fromId, start, cursor, preview }
 
-    const hex = document.createElement('input');
-    hex.type = 'text';
-    hex.spellcheck = false;
-    hex.maxLength = 7;
-    hex.className = 'tt-hex';
-    hex.addEventListener('focus', () => { hex._before = captureStyle(toolbarNodeId); });
-    hex.addEventListener('input', () => {
-      const v = normalizeHex(hex.value);
-      if (!v) return;
-      pickerHsv = hexToHsv(v);
-      updatePickerUI();
-      applyPickerColor(v, true);
-    });
-    hex.addEventListener('change', () => { pushStyleHistory(toolbarNodeId, hex._before); });
-
-    top.appendChild(eye);
-    top.appendChild(hex);
-    wrap.appendChild(top);
-
-    const hue = document.createElement('div');
-    hue.className = 'tt-hue';
-    const hueHandle = document.createElement('div');
-    hueHandle.className = 'tt-hue__handle';
-    hue.appendChild(hueHandle);
-    wrap.appendChild(hue);
-
-    const sv = document.createElement('div');
-    sv.className = 'tt-sv';
-    const svHandle = document.createElement('div');
-    svHandle.className = 'tt-sv__handle';
-    sv.appendChild(svHandle);
-    wrap.appendChild(sv);
-
-    pickerEls = { wrap, hex, hue, hueHandle, sv, svHandle };
-    bindHueDrag(hue);
-    bindSvDrag(sv);
-    return wrap;
-  }
-
-  function bindHueDrag(hue) {
-    hue.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      pickerDragging = true;
-      const before = captureStyle(toolbarNodeId);
-      hue.setPointerCapture(e.pointerId);
-      const move = (ev) => {
-        const r = hue.getBoundingClientRect();
-        pickerHsv.h = clamp01((ev.clientX - r.left) / r.width) * 360;
-        updatePickerUI();
-        applyPickerColor(hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v), true);
-      };
-      const up = () => {
-        pickerDragging = false;
-        hue.removeEventListener('pointermove', move);
-        hue.removeEventListener('pointerup', up);
-        pushStyleHistory(toolbarNodeId, before);
-      };
-      hue.addEventListener('pointermove', move);
-      hue.addEventListener('pointerup', up);
-      move(e);
-    });
-  }
-
-  function bindSvDrag(sv) {
-    sv.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      pickerDragging = true;
-      const before = captureStyle(toolbarNodeId);
-      sv.setPointerCapture(e.pointerId);
-      const move = (ev) => {
-        const r = sv.getBoundingClientRect();
-        pickerHsv.s = clamp01((ev.clientX - r.left) / r.width);
-        pickerHsv.v = 1 - clamp01((ev.clientY - r.top) / r.height);
-        updatePickerUI();
-        applyPickerColor(hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v), true);
-      };
-      const up = () => {
-        pickerDragging = false;
-        sv.removeEventListener('pointermove', move);
-        sv.removeEventListener('pointerup', up);
-        pushStyleHistory(toolbarNodeId, before);
-      };
-      sv.addEventListener('pointermove', move);
-      sv.addEventListener('pointerup', up);
-      move(e);
-    });
-  }
-
-  function updatePickerUI() {
-    if (!pickerEls) return;
-    const hueHex = hsvToHex(pickerHsv.h, 1, 1);
-    pickerEls.sv.style.setProperty('--hue', hueHex);
-    pickerEls.hueHandle.style.left = (pickerHsv.h / 360 * 100) + '%';
-    pickerEls.svHandle.style.left = (pickerHsv.s * 100) + '%';
-    pickerEls.svHandle.style.top = ((1 - pickerHsv.v) * 100) + '%';
-    pickerEls.svHandle.style.background = hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v);
-    if (document.activeElement !== pickerEls.hex) {
-      pickerEls.hex.value = hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v);
+  function arrowDash(style) {
+    switch (style) {
+      case 'dashed': return '10 6';
+      case 'dotted': return '1 6';
+      case 'dashdot': return '12 5 1 5';
+      default: return '';
     }
   }
 
-  function syncPickerFromNode() {
-    if (!pickerEls || pickerDragging) return;
-    if (document.activeElement === pickerEls.hex) return;
-    const n = nodes.get(toolbarNodeId);
-    const hex = normalizeHex((n && n.color) || '') || '#1a1a1a';
-    pickerHsv = hexToHsv(hex);
-    pickerEls.hex.value = hex;
-    updatePickerUI();
-  }
-
-  function applyPickerColor(hex, live) {
-    if (pickerEls && document.activeElement !== pickerEls.hex) pickerEls.hex.value = hex;
-    if (!toolbarNodeId) return;
-    setNodeStyle(toolbarNodeId, { color: hex }, !!live);
-  }
-
-  function pickWithEyedropper() {
-    if (!window.EyeDropper) return;
-    const before = captureStyle(toolbarNodeId);
-    try {
-      new window.EyeDropper().open().then(res => {
-        const hex = normalizeHex(res && res.sRGBHex);
-        if (!hex) return;
-        pickerHsv = hexToHsv(hex);
-        updatePickerUI();
-        applyPickerColor(hex, true);
-        pushStyleHistory(toolbarNodeId, before);
-      }).catch(() => { /* отменено */ });
-    } catch (e) { /* не поддержано */ }
-  }
-
-  function toggleToolbarMenu(btn) {
-    const name = btn.dataset.menu;
-    const menu = textToolbar.querySelector('.tt-menu[data-menu-for="' + name + '"]');
-    if (!menu) return;
-    if (toolbarMenu && toolbarMenu !== menu) toolbarMenu.classList.add('hidden');
-    if (menu.classList.contains('hidden')) {
-      if (name === 'color') syncPickerFromNode();
-      menu.style.left = btn.offsetLeft + 'px';
-      menu.classList.remove('hidden');
-      toolbarMenu = menu;
-    } else {
-      menu.classList.add('hidden');
-      toolbarMenu = null;
-    }
-  }
-
-  function closeToolbarMenu() {
-    if (toolbarMenu) { toolbarMenu.classList.add('hidden'); toolbarMenu = null; }
-  }
-
-  function pickToolbarMenu(item) {
-    const menu = item.closest('.tt-menu');
-    const name = menu ? menu.dataset.menuFor : null;
-    const value = item.dataset.value;
-    closeToolbarMenu();
-    if (!toolbarNodeId || !name) return;
-
-    if (name === 'color') setNodeStyle(toolbarNodeId, { color: value });
-    else if (name === 'font') setNodeStyle(toolbarNodeId, { fontFamily: value });
-    else if (name === 'align') setNodeStyle(toolbarNodeId, { align: value });
-    else if (name === 'size') setNodeStyle(toolbarNodeId, { fontSize: Number(value) });
-  }
-
-  function captureStyle(id) {
-    const n = id && nodes.get(id);
-    return n ? { fontFamily: n.fontFamily, fontSize: n.fontSize, color: n.color, align: n.align } : null;
-  }
-
-  function pushStyleHistory(id, before) {
-    if (!id || !before) return;
-    pushHistory({ undo: () => {
-      const nn = nodes.get(id);
-      const ne = nodeEls.get(id);
-      if (!nn) return;
-      Object.assign(nn, before);
-      if (ne) applyNodeTextStyle(ne, nn);
-      if (projectId) window.Store.updateNode(projectId, id, before).catch(() => {});
-      updateTextToolbar();
-    } });
-  }
-
-  function setLabel(role, text) {
-    const el = textToolbar && textToolbar.querySelector('[data-role="' + role + '"]');
-    if (el) el.textContent = text;
-  }
-
-  function updateTextToolbar() {
-    if (!textToolbar) return;
-    const id = selectedIds.size === 1 ? [...selectedIds][0] : null;
-    const n = id && nodes.get(id);
-    const el = id && nodeEls.get(id);
-    if (!n || !el || (n.type !== 'text' && n.type !== 'sticky')) { hideTextToolbar(); return; }
-
-    toolbarNodeId = id;
-    textToolbar.classList.remove('hidden');
-
-    setLabel('font', (FONT_FAMILIES.find(f => f.value === (n.fontFamily || '')) || FONT_FAMILIES[0]).label);
-    const sz = n.fontSize || DEFAULT_FONT_SIZE;
-    const preset = FONT_SIZES.find(s => s.value === sz);
-    setLabel('size', preset ? preset.label : sz + 'px');
-    const alignLabel = textToolbar.querySelector('[data-role="align"]');
-    if (alignLabel) alignLabel.innerHTML = alignSvg(n.align || 'left');
-    const dot = textToolbar.querySelector('.tt-dot');
-    if (dot) dot.style.background = n.color || '#1a1a1a';
-
-    // Подсветка активных пунктов меню.
-    markMenuItem('font', n.fontFamily || '');
-    markMenuItem('size', preset ? sz : '__none__');
-    markMenuItem('align', n.align || 'left');
-    syncPickerFromNode();
-    const sizeInput = textToolbar.querySelector('.tt-num');
-    if (sizeInput && document.activeElement !== sizeInput) sizeInput.value = sz;
-
-    const focused = document.activeElement === el;
-    ['bold', 'italic', 'strikeThrough', 'insertUnorderedList', 'insertOrderedList'].forEach(c => {
-      const btn = textToolbar.querySelector('[data-cmd="' + c + '"]');
-      if (!btn) return;
-      let on = false;
-      if (focused) { try { on = document.queryCommandState(c); } catch (e) { /* ignore */ } }
-      btn.classList.toggle('is-active', on);
-    });
-
-    const r = el.getBoundingClientRect();
-    const vr = viewport.getBoundingClientRect();
-    const tw = textToolbar.offsetWidth;
-    const th = textToolbar.offsetHeight;
-    let left = r.left - vr.left + r.width / 2 - tw / 2;
-    left = Math.max(8, Math.min(left, vr.width - tw - 8));
-    let top = r.top - vr.top - th - 10;
-    if (top < 8) top = r.bottom - vr.top + 10;
-    textToolbar.style.left = left + 'px';
-    textToolbar.style.top = top + 'px';
-  }
-
-  function hideTextToolbar() {
-    if (!textToolbar) return;
-    closeToolbarMenu();
-    textToolbar.classList.add('hidden');
-    toolbarNodeId = null;
-  }
-
-  // Выделение сохраняем, только если оно внутри активного элемента.
-  function saveSelection() {
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) return;
-    const range = sel.getRangeAt(0);
-    const el = toolbarNodeId && nodeEls.get(toolbarNodeId);
-    if (el && !el.contains(range.startContainer)) return;
-    savedRange = range.cloneRange();
-  }
-
-  function restoreSelection() {
-    if (!savedRange) return;
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    try { sel.addRange(savedRange); } catch (e) { /* устаревший диапазон */ }
-  }
-
-  // Отслеживаем системное выделение текста, чтобы панель не теряла его.
-  function onSelectionChange() {
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) return;
-    const range = sel.getRangeAt(0);
-    const el = toolbarNodeId && nodeEls.get(toolbarNodeId);
-    if (el && el.contains(range.startContainer) && el.contains(range.endContainer)) {
-      savedRange = range.cloneRange();
-    }
-  }
-
-  function setNodeStyle(id, patch, live) {
+  function rectOf(id) {
     const n = nodes.get(id);
     const el = nodeEls.get(id);
-    if (!n) return;
-    const before = captureStyle(id);
+    if (!n || !el) return null;
+    return { x: n.x, y: n.y, w: el.offsetWidth || 0, h: el.offsetHeight || 0 };
+  }
+
+  // Точка на границе прямоугольника в направлении target.
+  function borderPoint(rect, target) {
+    const cx = rect.x + rect.w / 2;
+    const cy = rect.y + rect.h / 2;
+    const dx = target.x - cx, dy = target.y - cy;
+    if (!dx && !dy) return { x: cx, y: cy };
+    const sx = dx ? (rect.w / 2) / Math.abs(dx) : Infinity;
+    const sy = dy ? (rect.h / 2) / Math.abs(dy) : Infinity;
+    const s = Math.min(sx, sy);
+    return { x: cx + dx * s, y: cy + dy * s };
+  }
+
+  function arrowEndpoints(node) {
+    const rf = node.fromId ? rectOf(node.fromId) : null;
+    const rt = node.toId ? rectOf(node.toId) : null;
+    let a = rf ? { x: rf.x + rf.w / 2, y: rf.y + rf.h / 2 } : { x: node.x1 || 0, y: node.y1 || 0 };
+    let b = rt ? { x: rt.x + rt.w / 2, y: rt.y + rt.h / 2 } : { x: node.x2 || 0, y: node.y2 || 0 };
+    if (rf) a = borderPoint(rf, b);
+    if (rt) b = borderPoint(rt, a);
+    return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+  }
+
+  function svgEl(name, attrs) {
+    const el = document.createElementNS(SVGNS, name);
+    if (attrs) Object.keys(attrs).forEach(k => el.setAttribute(k, attrs[k]));
+    return el;
+  }
+
+  function addCap(group, x, y, angle, type, color) {
+    if (!type || type === 'none') return;
+    const deg = angle * 180 / Math.PI;
+    const g = svgEl('g', { transform: 'translate(' + x + ' ' + y + ') rotate(' + deg + ')' });
+    if (type === 'arrow') {
+      g.appendChild(svgEl('path', { d: 'M0 0 L-12 -6 L-12 6 Z', fill: color }));
+    } else if (type === 'triangle') {
+      g.appendChild(svgEl('path', { d: 'M0 0 L-13 -8 L-13 8 Z', fill: 'none', stroke: color, 'stroke-width': 1.5 }));
+    } else if (type === 'circle') {
+      g.appendChild(svgEl('circle', { cx: -6, cy: 0, r: 5, fill: color }));
+    } else if (type === 'diamond') {
+      g.appendChild(svgEl('path', { d: 'M0 0 L-7 -5 L-14 0 L-7 5 Z', fill: 'none', stroke: color, 'stroke-width': 1.5 }));
+    }
+    group.appendChild(g);
+  }
+
+  function renderArrow(node) {
+    if (!arrowLayer || arrowEls.has(node.id)) return;
+    const g = svgEl('g', { class: 'arrow' });
+    g.dataset.id = node.id;
+    g.appendChild(svgEl('line', { class: 'arrow__line' }));
+    g.appendChild(svgEl('line', { class: 'arrow__hit' }));
+    g.appendChild(svgEl('g', { class: 'arrow__caps' }));
+    arrowLayer.appendChild(g);
+    arrowEls.set(node.id, g);
+    updateArrow(node);
+  }
+
+  function updateArrow(node) {
+    const g = arrowEls.get(node.id);
+    if (!g) return;
+    const e = arrowEndpoints(node);
+    const color = node.color || ARROW_DEFAULT_COLOR;
+    const line = g.querySelector('.arrow__line');
+    const hit = g.querySelector('.arrow__hit');
+    [line, hit].forEach(l => {
+      l.setAttribute('x1', e.x1); l.setAttribute('y1', e.y1);
+      l.setAttribute('x2', e.x2); l.setAttribute('y2', e.y2);
+    });
+    line.setAttribute('stroke', color);
+    line.setAttribute('stroke-width', 1.5);
+    line.setAttribute('stroke-linecap', 'round');
+    line.setAttribute('stroke-dasharray', arrowDash(node.lineStyle));
+
+    const caps = g.querySelector('.arrow__caps');
+    while (caps.firstChild) caps.removeChild(caps.firstChild);
+    const angle = Math.atan2(e.y2 - e.y1, e.x2 - e.x1);
+    addCap(caps, e.x1, e.y1, angle + Math.PI, node.startCap || 'none', color);
+    addCap(caps, e.x2, e.y2, angle, node.endCap || 'arrow', color);
+    g.classList.toggle('is-selected', selectedIds.has(node.id));
+  }
+
+  function refreshArrows() {
+    nodes.forEach(n => { if (n.type === 'arrow') updateArrow(n); });
+  }
+
+  function removeArrowEl(id) {
+    const g = arrowEls.get(id);
+    if (g) g.remove();
+    arrowEls.delete(id);
+  }
+
+  function setArrowStyle(id, patch, live) {
+    const n = nodes.get(id);
+    if (!n || n.type !== 'arrow') return;
+    const before = {};
+    Object.keys(patch).forEach(k => { before[k] = n[k]; });
     Object.assign(n, patch);
-    if (el) applyNodeTextStyle(el, n);
+    updateArrow(n);
     if (projectId) window.Store.updateNode(projectId, id, patch).catch(handleError);
-    if (!live) pushStyleHistory(id, before);
-    updateTextToolbar();
-  }
-
-  function runTextCommand(cmd, arg) {
-    const id = toolbarNodeId;
-    const el = id && nodeEls.get(id);
-    const n = id && nodes.get(id);
-    if (!el || !n) return;
-    const before = n.text || '';
-    saveSelection();
-    el.focus();
-    restoreSelection();
-    ensureSelectionIn(el);
-    try {
-      document.execCommand('styleWithCSS', false, cmd !== 'createLink');
-      document.execCommand(cmd, false, arg == null ? null : arg);
-    } catch (e) { console.error('[format]', e); }
-    // Сохраняем разметку с hex-цветами (браузер любит возвращать rgb).
-    n.text = rgbToHex(el.innerHTML);
-    scheduleTextSave(id);
-    pushHistory({ undo: () => {
+    if (!live) pushHistory({ undo: () => {
       const nn = nodes.get(id);
-      const ne = nodeEls.get(id);
-      if (nn) nn.text = before;
-      if (ne) ne.innerHTML = sanitizeHtml(before);
-      if (projectId) window.Store.updateNode(projectId, id, { text: before }).catch(handleError);
+      if (!nn) return;
+      Object.assign(nn, before);
+      updateArrow(nn);
+      if (projectId) window.Store.updateNode(projectId, id, before).catch(() => {});
     } });
-    saveSelection();
-    updateTextToolbar();
   }
 
-  // Если внутри блока нет активного выделения — берём весь блок целиком,
-  // чтобы форматирование применялось ко всему тексту.
-  function ensureSelectionIn(el) {
-    const sel = window.getSelection();
-    if (!sel) return;
-    const ok = sel.rangeCount && !sel.isCollapsed &&
-      el.contains(sel.anchorNode) && el.contains(sel.focusNode);
-    if (ok) return;
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    sel.removeAllRanges();
-    sel.addRange(range);
+  function createArrow(fromId, toId, freeX, freeY) {
+    const node = {
+      id: window.Store.uid(),
+      type: 'arrow',
+      fromId: fromId || null,
+      toId: toId || null,
+      x1: 0, y1: 0,
+      x2: Math.round(freeX || 0),
+      y2: Math.round(freeY || 0),
+      color: ARROW_DEFAULT_COLOR,
+      lineStyle: 'solid',
+      startCap: 'none',
+      endCap: 'arrow',
+      createdBy: window.currentUser ? window.currentUser.uid : 'anon'
+    };
+    placeNode(node, false);
+    selectOnly(node.id);
+    refreshSelection();
+  }
+
+  // --- Интерактивное рисование стрелки из шарика ---
+
+  function startArrowDraw(e, fromId) {
+    e.preventDefault();
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    const rf = rectOf(fromId);
+    const start = rf ? { x: rf.x + rf.w / 2, y: rf.y + rf.h / 2 } : screenToWorld(e.clientX, e.clientY);
+    const preview = svgEl('line', {
+      x1: start.x, y1: start.y, x2: start.x, y2: start.y,
+      stroke: '#4262ff', 'stroke-width': 2, 'stroke-dasharray': '6 4',
+      'stroke-linecap': 'round', 'pointer-events': 'none'
+    });
+    if (arrowLayer) arrowLayer.appendChild(preview);
+    arrowDraw = { fromId, start, cursor: start, preview };
+    viewport.style.cursor = 'crosshair';
+  }
+
+  function updateArrowDraw(e) {
+    if (!arrowDraw) return;
+    const p = screenToWorld(e.clientX, e.clientY);
+    arrowDraw.cursor = p;
+    const rf = rectOf(arrowDraw.fromId);
+    const a = rf ? borderPoint(rf, p) : arrowDraw.start;
+    const pr = arrowDraw.preview;
+    pr.setAttribute('x1', a.x); pr.setAttribute('y1', a.y);
+    pr.setAttribute('x2', p.x); pr.setAttribute('y2', p.y);
+  }
+
+  function finishArrowDraw(e) {
+    if (!arrowDraw) return;
+    const fromId = arrowDraw.fromId;
+    const startPt = arrowDraw.start;
+    const p = screenToWorld(e.clientX, e.clientY);
+    if (arrowDraw.preview) arrowDraw.preview.remove();
+    arrowDraw = null;
+    viewport.style.cursor = '';
+
+    const rf = rectOf(fromId);
+    const a = rf ? borderPoint(rf, p) : startPt;
+  // Слишком короткая стрелка — игнорируем (случайный клик по шарику).
+    if (Math.hypot(p.x - a.x, p.y - a.y) < 12) return;
+
+    let toId = null;
+    const targetEl = document.elementFromPoint(e.clientX, e.clientY);
+    const targetNodeEl = targetEl && targetEl.closest ? targetEl.closest('.canvas-node') : null;
+    if (targetNodeEl) {
+      const tid = targetNodeEl.dataset.id;
+      if (tid && tid !== fromId) toId = tid;
+    }
+
+    createArrow(fromId, toId, p.x, p.y);
+    const newId = [...selectedIds][0];
+    pushHistory({ undo: () => removeLocalAndRemote(newId) });
+  }
+
+  // Удаляем стрелки, привязанные к исчезнувшему элементу.
+  function cleanupArrowsFor(id) {
+    [...arrowEls.keys()].forEach(aid => {
+      const n = nodes.get(aid);
+      if (n && (n.fromId === id || n.toId === id)) removeLocalAndRemote(aid);
+    });
   }
 
   function selectOnly(id) {
@@ -1261,7 +1037,10 @@ window.Board = (function () {
       w: node.w, h: node.h,
       text: node.text || '', src: node.src, createdBy: node.createdBy,
       fontFamily: node.fontFamily, fontSize: node.fontSize,
-      color: node.color, align: node.align
+      color: node.color, align: node.align,
+      fromId: node.fromId, toId: node.toId,
+      x1: node.x1, y1: node.y1, x2: node.x2, y2: node.y2,
+      lineStyle: node.lineStyle, startCap: node.startCap, endCap: node.endCap
     };
   }
 
@@ -1277,7 +1056,14 @@ window.Board = (function () {
 
   function pasteClipboard() {
     if (!clipboard.length) return;
-    const created = clipboard.map(s => ({ ...s, id: window.Store.uid(), x: s.x + 24, y: s.y + 24 }));
+    const created = clipboard.map(s => {
+      const c = { ...s, id: window.Store.uid(), x: (s.x || 0) + 24, y: (s.y || 0) + 24 };
+      if (c.type === 'arrow') {
+        c.x2 = (s.x2 || 0) + 24;
+        c.y2 = (s.y2 || 0) + 24;
+      }
+      return c;
+    });
     created.forEach(n => placeNode(n, false));
     setSelection(created.map(n => n.id));
     pushHistory({ undo: () => created.forEach(n => removeLocalAndRemote(n.id)) });
@@ -1295,6 +1081,51 @@ window.Board = (function () {
     pushHistory({
       undo: () => { snaps.forEach(s => placeNode({ ...s }, false)); setSelection(snaps.map(s => s.id)); }
     });
+  }
+
+  function duplicateSelected() {
+    if (!selectedIds.size) return;
+    const snaps = [];
+    selectedIds.forEach(id => { const n = nodes.get(id); if (n) snaps.push(snapshot(n)); });
+    if (!snaps.length) return;
+    const created = snaps.map(s => {
+      const c = { ...s, id: window.Store.uid(), x: (s.x || 0) + 24, y: (s.y || 0) + 24 };
+      if (c.type === 'arrow') { c.x2 = (s.x2 || 0) + 24; c.y2 = (s.y2 || 0) + 24; }
+      return c;
+    });
+    created.forEach(n => placeNode(n, false));
+    setSelection(created.map(n => n.id));
+    pushHistory({ undo: () => created.forEach(n => removeLocalAndRemote(n.id)) });
+  }
+
+  // Сброс изображения к «оригинальному» размеру (с ограничением по стороне).
+  function resetImageSize(id) {
+    const n = nodes.get(id);
+    const el = nodeEls.get(id);
+    if (!n || n.type !== 'image' || !n.src) return;
+    const before = { w: n.w, h: n.h };
+    const img = new Image();
+    img.onload = () => {
+      const size = drawScale(img.naturalWidth || img.width, img.naturalHeight || img.height, IMG_DISPLAY_MAX);
+      n.w = size.w;
+      n.h = size.h;
+      if (el) applyNodeBox(el, n);
+      updateSelectionBox();
+      refreshArrows();
+      if (projectId) window.Store.updateNode(projectId, id, { w: n.w, h: n.h }).catch(handleError);
+      pushHistory({
+        undo: () => {
+          const nn = nodes.get(id);
+          if (nn) { nn.w = before.w; nn.h = before.h; }
+          const ne = nodeEls.get(id);
+          if (ne && nn) applyNodeBox(ne, nn);
+          updateSelectionBox();
+          refreshArrows();
+          if (projectId) window.Store.updateNode(projectId, id, { w: before.w, h: before.h }).catch(handleError);
+        }
+      });
+    };
+    img.src = n.src;
   }
 
   // --- Присутствие: чужие курсоры и онлайн-аватарки ---
@@ -1498,7 +1329,6 @@ window.Board = (function () {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('beforeunload', onBeforeUnload);
-    document.addEventListener('selectionchange', onSelectionChange);
     document.addEventListener('paste', onPaste);
     viewport.addEventListener('dragover', onDragOver);
     viewport.addEventListener('drop', onDrop);
@@ -1507,6 +1337,8 @@ window.Board = (function () {
     // но оставляем его в полях ввода (заголовок, текстовые элементы).
     document.addEventListener('contextmenu', (e) => {
       if (e.target.closest('input, textarea')) return;
+      const a = document.activeElement;
+      if (a && a.isContentEditable && a.contains(e.target)) return;
       e.preventDefault();
     });
 
@@ -1588,7 +1420,7 @@ window.Board = (function () {
       // Правка: вставляем очищенный HTML с сохранением оформления.
       if (!html && !text) return;
       e.preventDefault();
-      if (html) document.execCommand('insertHTML', false, sanitizeHtml(html));
+      if (html) document.execCommand('insertHTML', false, sanitizePastedHtml(html));
       else document.execCommand('insertText', false, text);
       return;
     }
@@ -1596,7 +1428,7 @@ window.Board = (function () {
     if (!html && !text) return;
     e.preventDefault();
     const p = viewCenterWorld();
-    const content = sanitizeHtml(html) || escapeHtml(text);
+    const content = sanitizePastedHtml(html) || escapeHtml(text);
     const node = {
       id: window.Store.uid(),
       type: 'text',
@@ -1662,6 +1494,12 @@ window.Board = (function () {
       return;
     }
 
+    const ball = e.target.closest('.sel-ball');
+    if (ball && e.button === 0 && selectedIds.size === 1) {
+      startArrowDraw(e, [...selectedIds][0]);
+      return;
+    }
+
     if (e.button === 1) { startPan(e); return; }   // СКМ — перемещение доски
     if (e.button === 2) { maybeEditFromRmb(e); return; } // ПКМ: выделить / двойной ПКМ — правка
     if (e.button !== 0) return;
@@ -1672,6 +1510,14 @@ window.Board = (function () {
       if (activeTool === 'image') pickImageAt(p.x, p.y);
       else addNode(activeTool, p.x, p.y);
       setTool('select');
+      return;
+    }
+
+    const arrowEl = e.target.closest('.arrow');
+    if (arrowEl) {
+      e.preventDefault();
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      selectOnly(arrowEl.dataset.id);
       return;
     }
 
@@ -1758,6 +1604,7 @@ window.Board = (function () {
     };
     viewport.style.cursor =
       (corner === 'e' || corner === 'w') ? 'ew-resize'
+        : (corner === 'n' || corner === 's') ? 'ns-resize'
         : (corner === 'nw' || corner === 'se') ? 'nwse-resize' : 'nesw-resize';
   }
 
@@ -1911,6 +1758,7 @@ window.Board = (function () {
   }
 
   function onMouseMove(e) {
+    if (arrowDraw) { updateArrowDraw(e); return; }
     if (resizing) { doResize(e); return; }
     if (marquee) { updateMarquee(e); return; }
     if (panning) {
@@ -1961,7 +1809,8 @@ window.Board = (function () {
     });
   }
 
-  function onMouseUp() {
+  function onMouseUp(e) {
+    if (arrowDraw) { finishArrowDraw(e); return; }
     if (resizing) { endResize(); return; }
     if (marquee) { endMarquee(); return; }
     if (panning) { endPan(); scheduleViewSave(); }
@@ -2069,5 +1918,35 @@ window.Board = (function () {
     }
   }
 
-  return { init, load, unload, applyView, resetView, setDefaults };
+  // Контекст для внешних модулей (панель элемента, контекстное меню ПКМ).
+  const ctx = {
+    viewport: () => viewport,
+    projectId: () => projectId,
+    getNode: (id) => nodes.get(id),
+    getEl: (id) => nodeEls.get(id) || arrowEls.get(id),
+    singleId: () => (selectedIds.size === 1 ? [...selectedIds][0] : null),
+    selectionCount: () => selectedIds.size,
+    isLocked: (id) => isLockedByOther(id),
+    applyTextStyle: applyNodeTextStyle,
+    applyBox: applyNodeBox,
+    scheduleTextSave,
+    pushHistory,
+    sanitize: sanitizeHtml,
+    rgbToHex,
+    updateSelectionBox,
+    setArrowStyle,
+    copySelected,
+    cutSelected,
+    pasteClipboard,
+    hasClipboard: () => clipboard.length > 0,
+    duplicateSelected,
+    deleteSelected,
+    resetImageSize,
+    selectOnly,
+    consts: {
+      FONT_FAMILIES, FONT_SIZES, TEXT_COLORS, TEXT_COLORS_LIGHT, ALIGN_ITEMS, DEFAULT_FONT_SIZE
+    }
+  };
+
+  return { init, load, unload, applyView, resetView, setDefaults, ctx };
 })();

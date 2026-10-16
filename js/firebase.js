@@ -152,7 +152,8 @@
     },
 
     async updateNode(projectId, nodeId, patch) {
-      await nodesCol(projectId).doc(nodeId).update({ ...patch, updatedAt: Date.now() });
+      // set+merge создаёт документ, если его ещё нет (иначе "No document to update").
+      await nodesCol(projectId).doc(nodeId).set({ ...patch, updatedAt: Date.now() }, { merge: true });
     },
 
     async removeNode(projectId, nodeId) {

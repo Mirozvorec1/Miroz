@@ -397,7 +397,7 @@ html, body {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: contain;
+  object-fit: fill;
   pointer-events: none;
   -webkit-user-drag: none;
   user-select: none;
@@ -468,6 +468,47 @@ html, body {
 }
 .sel-handle[data-corner="e"] { right: -5px; left: auto; cursor: ew-resize; }
 .sel-handle[data-corner="w"] { left: -5px; right: auto; cursor: ew-resize; }
+
+.sel-handle--h {
+  width: 24px;
+  height: 10px;
+  left: 50%;
+  margin-left: -12px;
+}
+.sel-handle[data-corner="n"] { top: -5px; bottom: auto; cursor: ns-resize; }
+.sel-handle[data-corner="s"] { bottom: -5px; top: auto; cursor: ns-resize; }
+/* У текста нет вертикальных ручек — он растёт вниз сам. */
+.sel-box--text .sel-handle[data-corner="n"],
+.sel-box--text .sel-handle[data-corner="s"] { display: none; }
+
+/* Шарики-коннекторы (как в Miro): чуть дальше ручек, со всех сторон. */
+.sel-ball {
+  display: none;
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px;
+  background: #fff;
+  border: 1.5px solid var(--primary);
+  border-radius: 50%;
+  cursor: crosshair;
+  pointer-events: auto;
+}
+.sel-box--single:not(.sel-box--arrow) .sel-ball { display: block; }
+.sel-ball[data-ball="n"] { left: 50%; top: -22px; }
+.sel-ball[data-ball="s"] { left: 50%; bottom: -22px; }
+.sel-ball[data-ball="e"] { right: -22px; top: 50%; }
+.sel-ball[data-ball="w"] { left: -22px; top: 50%; }
+.sel-ball:hover { background: var(--primary); }
+
+/* Стрелки-коннекторы (SVG-слой поверх элементов). */
+.arrow-layer { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.arrow { pointer-events: none; }
+.arrow__line { fill: none; }
+.arrow__hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
+.arrow:hover .arrow__line, .arrow.is-selected .arrow__line { stroke-width: 2.5; }
+.sel-box--arrow .sel-handle,
+.sel-box--arrow .sel-ball { display: none; }
 
 .board-slug {
   font-size: 12px;
@@ -906,4 +947,59 @@ html, body {
 }
 .settings-input:focus, .settings-select:focus { outline: none; border-color: var(--primary); }
 input[type="range"].settings-range { width: 100%; accent-color: var(--primary); }
+
+/* ---------- Плавающее меню элемента (текст / стрелка) ---------- */
+.em-panel { display: flex; align-items: stretch; gap: 2px; }
+.em-color-dot {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .7);
+  background: #e6e8ee;
+}
+.am-colors {
+  display: grid;
+  grid-template-columns: repeat(4, 26px);
+  gap: 6px;
+  width: auto;
+}
+.am-swatch {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.am-swatch:hover { transform: scale(1.08); }
+.am-swatch.is-active { border-color: #fff; box-shadow: 0 0 0 2px rgba(66, 98, 255, .9); }
+
+/* ---------- Контекстное меню (ПКМ) ---------- */
+.context-menu {
+  position: fixed;
+  min-width: 184px;
+  padding: 6px;
+  background: #2b2f3a;
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .32);
+  z-index: 60;
+  user-select: none;
+}
+.context-menu__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #e6e8ee;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.context-menu__item:hover { background: rgba(255, 255, 255, .12); }
+.context-menu__item:disabled { opacity: .4; cursor: default; }
+.context-menu__item:disabled:hover { background: transparent; }
 
