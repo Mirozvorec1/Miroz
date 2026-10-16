@@ -78,6 +78,8 @@ window.Board = (function () {
   const view = { x: 0, y: 0, scale: 1 };
 
   let activeTool = 'select';
+  // Общие настройки проекта: стандартный шрифт и кегль новых элементов.
+  let boardDefaults = { fontFamily: '', fontSize: DEFAULT_FONT_SIZE };
   let spaceDown = false;
   let panning = false;
   let panStart = null;
@@ -263,6 +265,17 @@ window.Board = (function () {
       if (node.h !== undefined) local.h = node.h;
       applyNodeBox(el, local);
     }
+
+    // Изображение: обновляем только источник.
+    if (node.type === 'image') {
+      if (node.src !== undefined && node.src !== local.src) {
+        local.src = node.src;
+        const im = el.querySelector('img');
+        if (im && im.getAttribute('src') !== node.src) im.src = node.src;
+      }
+      return;
+    }
+
     ['fontFamily', 'fontSize', 'color', 'align'].forEach(k => {
       if (node[k] !== undefined) local[k] = node[k];
     });
@@ -288,8 +301,17 @@ window.Board = (function () {
     el.style.left = node.x + 'px';
     el.style.top = node.y + 'px';
     applyNodeBox(el, node);
-    el.innerHTML = sanitizeHtml(node.text || '');
-    applyNodeTextStyle(el, node);
+
+    if (node.type === 'image') {
+      const img = document.createElement('img');
+      img.src = node.src || '';
+      img.alt = '';
+      img.draggable = false;
+      el.appendChild(img);
+    } else {
+      el.innerHTML = sanitizeHtml(node.text || '');
+      applyNodeTextStyle(el, node);
+    }
     if (selectedIds.has(node.id)) el.classList.add('is-selected');
 
     if (node.type === 'sticky' || node.type === 'text') {
@@ -406,8 +428,78 @@ window.Board = (function () {
       text: type === 'frame' ? '' : (type === 'text' ? 'Текст' : 'Стикер'),
       createdBy: user ? user.uid : 'anon'
     };
+    if (type === 'text' || type === 'sticky') {
+      if (boardDefaults.fontFamily) node.fontFamily = boardDefaults.fontFamily;
+      if (boardDefaults.fontSize) node.fontSize = boardDefaults.fontSize;
+    }
     placeNode(node, type !== 'frame');
     pushHistory({ undo: () => removeLocalAndRemote(node.id) });
+  }
+
+  // --- Изображения ---
+
+  function pickImageAt(x, y) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', () => {
+      const f = input.files && input.files[0];
+      if (f) insertImage(f, x, y);
+    });
+    input.click();
+  }
+
+  function blobToDataURL(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(r.error || new Error('read failed'));
+      r.readAsDataURL(blob);
+    });
+  }
+
+  // Вставляет картинку как элемент доски. Файл уходит в хранилище проекта
+  // (Firebase Storage), при неудаче — inline data URL.
+  function insertImage(file, x, y) {
+    if (!file || !/^image\//.test(file.type)) return;
+    const objUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = async () => {
+      const maxSide = 420;
+      let w = img.naturalWidth || 240;
+      let h = img.naturalHeight || 180;
+      const k = Math.min(1, maxSide / Math.max(w, h));
+      w = Math.round(w * k);
+      h = Math.round(h * k);
+      URL.revokeObjectURL(objUrl);
+
+      const id = window.Store.uid();
+      const user = window.currentUser;
+      let src;
+      try {
+        src = await window.Store.uploadImage(projectId, id, file);
+      } catch (err) {
+        console.warn('[image] upload failed, using data URL:', err);
+        src = await blobToDataURL(file);
+      }
+      const node = {
+        id,
+        type: 'image',
+        x: Math.round(x),
+        y: Math.round(y),
+        text: '',
+        src,
+        w,
+        h,
+        createdBy: user ? user.uid : 'anon'
+      };
+      placeNode(node, false);
+      selectOnly(id);
+      refreshSelection();
+      pushHistory({ undo: () => removeLocalAndRemote(id) });
+    };
+    img.onerror = () => URL.revokeObjectURL(objUrl);
+    img.src = objUrl;
   }
 
   // --- Выделение ---
@@ -1111,7 +1203,7 @@ window.Board = (function () {
     return {
       id: node.id, type: node.type, x: node.x, y: node.y,
       w: node.w, h: node.h,
-      text: node.text || '', createdBy: node.createdBy,
+      text: node.text || '', src: node.src, createdBy: node.createdBy,
       fontFamily: node.fontFamily, fontSize: node.fontSize,
       color: node.color, align: node.align
     };
@@ -1351,6 +1443,9 @@ window.Board = (function () {
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('beforeunload', onBeforeUnload);
     document.addEventListener('selectionchange', onSelectionChange);
+    document.addEventListener('paste', onPaste);
+    viewport.addEventListener('dragover', onDragOver);
+    viewport.addEventListener('drop', onDrop);
 
     // Отключаем контекстное меню браузера (в т.ч. Яндекс) на холсте и элементах,
     // но оставляем его в полях ввода (заголовок, текстовые элементы).
@@ -1362,9 +1457,104 @@ window.Board = (function () {
     document.querySelectorAll('.tool').forEach(btn => {
       btn.addEventListener('click', () => setTool(btn.dataset.tool));
     });
-    document.getElementById('zoom-in').addEventListener('click', () => zoomAt(0.2));
-    document.getElementById('zoom-out').addEventListener('click', () => zoomAt(-0.2));
+    document.getElementById('zoom-in').addEventListener('click', () => zoomAt(zoomStep()));
+    document.getElementById('zoom-out').addEventListener('click', () => zoomAt(-zoomStep()));
     document.getElementById('zoom-reset').addEventListener('click', resetView);
+  }
+
+  function zoomStep() {
+    return window.Settings ? window.Settings.zoomStep() : 0.2;
+  }
+
+  // --- Перетаскивание файлов и вставка из буфера ---
+
+  function onDragOver(e) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  }
+
+  function onDrop(e) {
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || !files.length) return;
+    e.preventDefault();
+    const p = screenToWorld(e.clientX, e.clientY);
+    let off = 0;
+    Array.prototype.forEach.call(files, (f) => {
+      if (f && /^image\//.test(f.type)) {
+        insertImage(f, p.x + off, p.y + off);
+        off += 24;
+      }
+    });
+  }
+
+  function viewCenterWorld() {
+    const r = viewport.getBoundingClientRect();
+    return screenToWorld(r.left + r.width / 2, r.top + r.height / 2);
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function onPaste(e) {
+    const cd = e.clipboardData;
+    if (!cd) return;
+
+    const activeEl = document.activeElement;
+    const editing = activeEl && activeEl.isContentEditable;
+
+    // Поля ввода (заголовок и т.п.) — вставку делает сам браузер.
+    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) return;
+
+    // Картинка из буфера (вне режима правки) → элемент-изображение.
+    let imageFile = null;
+    if (cd.items) {
+      for (let i = 0; i < cd.items.length; i++) {
+        const it = cd.items[i];
+        if (it.kind === 'file' && it.type && it.type.indexOf('image/') === 0) {
+          imageFile = it.getAsFile();
+          break;
+        }
+      }
+    }
+    if (imageFile && !editing) {
+      e.preventDefault();
+      const p = viewCenterWorld();
+      insertImage(imageFile, p.x, p.y);
+      return;
+    }
+
+    const html = cd.getData ? cd.getData('text/html') : '';
+    const text = cd.getData ? cd.getData('text/plain') : '';
+
+    if (editing) {
+      // Правка: вставляем очищенный HTML с сохранением оформления.
+      if (!html && !text) return;
+      e.preventDefault();
+      if (html) document.execCommand('insertHTML', false, sanitizeHtml(html));
+      else document.execCommand('insertText', false, text);
+      return;
+    }
+
+    if (!html && !text) return;
+    e.preventDefault();
+    const p = viewCenterWorld();
+    const content = sanitizeHtml(html) || escapeHtml(text);
+    const node = {
+      id: window.Store.uid(),
+      type: 'text',
+      x: Math.round(p.x),
+      y: Math.round(p.y),
+      text: content,
+      createdBy: window.currentUser ? window.currentUser.uid : 'anon'
+    };
+    if (boardDefaults.fontFamily) node.fontFamily = boardDefaults.fontFamily;
+    if (boardDefaults.fontSize) node.fontSize = boardDefaults.fontSize;
+    placeNode(node, false);
+    selectOnly(node.id);
+    refreshSelection();
+    pushHistory({ undo: () => removeLocalAndRemote(node.id) });
   }
 
   function setTool(tool) {
@@ -1423,7 +1613,8 @@ window.Board = (function () {
 
     if (activeTool !== 'select') {
       const p = screenToWorld(e.clientX, e.clientY);
-      addNode(activeTool, p.x, p.y);
+      if (activeTool === 'image') pickImageAt(p.x, p.y);
+      else addNode(activeTool, p.x, p.y);
       setTool('select');
       return;
     }
@@ -1778,7 +1969,7 @@ window.Board = (function () {
     }
     if (ctrl && (e.key === 'c' || e.key === 'C' || e.key === 'с' || e.key === 'С')) { copySelected(); return; }
     if (ctrl && (e.key === 'x' || e.key === 'X' || e.key === 'ч' || e.key === 'Ч')) { cutSelected(); return; }
-    if (ctrl && (e.key === 'v' || e.key === 'V' || e.key === 'м' || e.key === 'М')) { pasteClipboard(); return; }
+    if (ctrl && (e.key === 'v' || e.key === 'V' || e.key === 'м' || e.key === 'М')) { e.preventDefault(); pasteClipboard(); return; }
     if (ctrl && (e.key === 'a' || e.key === 'A' || e.key === 'ф' || e.key === 'Ф')) {
       e.preventDefault();
       setSelection([...nodes.keys()].filter(id => !isLockedByOther(id)));
@@ -1795,6 +1986,7 @@ window.Board = (function () {
     if (e.key === 'v' || e.key === '1') setTool('select');
     if (e.key === 'n' || e.key === 's' || e.key === '2') setTool('sticky');
     if (e.key === 't' || e.key === '3') setTool('text');
+    if (e.key === 'i' || e.key === '5') setTool('image');
     if (e.key === 'f' || e.key === '4') setTool('frame');
   }
 
@@ -1810,5 +2002,16 @@ window.Board = (function () {
     return a && (a.isContentEditable || a.tagName === 'INPUT');
   }
 
-  return { init, load, unload, applyView, resetView };
+  // Стандартный шрифт/кегль проекта (из настроек). Применяется к новым элементам.
+  function setDefaults(project) {
+    if (!project) return;
+    if (project.defaultFontFamily !== undefined) {
+      boardDefaults.fontFamily = project.defaultFontFamily || '';
+    }
+    if (project.defaultFontSize) {
+      boardDefaults.fontSize = Number(project.defaultFontSize) || DEFAULT_FONT_SIZE;
+    }
+  }
+
+  return { init, load, unload, applyView, resetView, setDefaults };
 })();

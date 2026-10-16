@@ -88,14 +88,23 @@
       return { id, name };
     },
 
-    // Обновление редактируемых полей проекта (название, обложка и т.п.).
+    // Обновление редактируемых полей проекта (название, обложка, настройки и т.п.).
     async updateProject(id, patch) {
       const data = {};
       if (patch.name != null) data.name = String(patch.name).trim();
       if (patch.cover != null) data.cover = String(patch.cover);
+      if (patch.defaultFontFamily != null) data.defaultFontFamily = String(patch.defaultFontFamily);
+      if (patch.defaultFontSize != null) data.defaultFontSize = Number(patch.defaultFontSize) || 16;
       data.updatedAt = Date.now();
       await projectsCol().doc(id).update(data);
       return { id, ...data };
+    },
+
+    // Realtime-подписка на документ проекта (для общих настроек). Возвращает отписку.
+    subscribeProject(id, onChange) {
+      return projectsCol().doc(id).onSnapshot(doc => {
+        if (doc.exists) onChange({ id: doc.id, ...doc.data() });
+      }, err => console.error('[project] snapshot error:', err));
     },
 
     async deleteProject(id) {
@@ -137,6 +146,7 @@
       if (node.align) data.align = node.align;
       if (node.w != null) data.w = node.w;
       if (node.h != null) data.h = node.h;
+      if (node.src) data.src = node.src;
       await nodesCol(projectId).doc(node.id).set(data);
       await projectsCol().doc(projectId).update({ updatedAt: Date.now() }).catch(() => {});
     },
@@ -176,6 +186,20 @@
 
     async saveView(projectId, view) {
       localStorage.setItem(viewKey(projectId), JSON.stringify(view));
+    },
+
+    // --- Изображения (Firebase Storage) ---
+
+    // Загружает картинку и возвращает публичный URL.
+    // Если Storage недоступен, промис реджектится — вызывающий делает data URL.
+    async uploadImage(projectId, nodeId, blob) {
+      if (!firebase.storage) throw new Error('Storage SDK не подключён');
+      const ext = blob && blob.type === 'image/jpeg' ? '.jpg'
+        : blob && blob.type === 'image/webp' ? '.webp'
+        : blob && blob.type === 'image/gif' ? '.gif' : '.png';
+      const ref = firebase.storage().ref().child('projects/' + projectId + '/' + nodeId + ext);
+      const snap = await ref.put(blob);
+      return await snap.ref.getDownloadURL();
     }
   };
 

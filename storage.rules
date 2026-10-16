@@ -1,0 +1,20 @@
+rules_version = '2';
+
+// Правила Firebase Storage для Miroz (картинки элементов доски).
+// Storage → Rules → Publish.
+//
+// Картинка грузится в projects/{projectId}/{nodeId}.{ext}, а в узле доски
+// хранится лишь её download URL. Скачивание идёт по токену из download URL
+// (токен выдаёт Storage при загрузке), поэтому read открыт, а запись —
+// только авторизованным.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /projects/{projectId}/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}

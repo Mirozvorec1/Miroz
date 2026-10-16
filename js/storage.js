@@ -71,10 +71,18 @@ window.__LocalStore = (function () {
     if (p) {
       if (patch.name != null) p.name = String(patch.name).trim();
       if (patch.cover != null) p.cover = String(patch.cover);
+      if (patch.defaultFontFamily != null) p.defaultFontFamily = String(patch.defaultFontFamily);
+      if (patch.defaultFontSize != null) p.defaultFontSize = Number(patch.defaultFontSize) || 16;
       p.updatedAt = Date.now();
       write(KEY_PROJECTS, projects);
     }
     return p;
+  }
+
+  async function subscribeProject(id, onChange) {
+    const p = await getProject(id);
+    if (p) onChange(p);
+    return function unsubscribe() {};
   }
 
   async function deleteProject(id) {
@@ -119,12 +127,24 @@ window.__LocalStore = (function () {
     write(KEY_VIEW + projectId, view);
   }
 
+  // --- Изображения (локальный режим: data URL) ---
+
+  function uploadImage(projectId, nodeId, blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('read failed'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
   return {
     listProjects,
     getProject,
     createProject,
     renameProject,
     updateProject,
+    subscribeProject,
     deleteProject,
     getNodes,
     addNode,
@@ -133,6 +153,7 @@ window.__LocalStore = (function () {
     subscribeNodes,
     getView,
     saveView,
+    uploadImage,
     uid
   };
 })();
