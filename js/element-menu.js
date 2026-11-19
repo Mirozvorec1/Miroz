@@ -606,15 +606,20 @@ window.ElementMenu = (function () {
   function pushStyleHistory(id, before) {
     if (!id || !before) return;
     const c = ctx();
-    c.pushHistory({ undo: () => {
+    const after = captureStyle(id);
+    const applyStyle = value => {
       const nn = c.getNode(id);
       const ne = c.getEl(id);
       if (!nn) return;
-      Object.assign(nn, before);
+      Object.assign(nn, value);
       if (ne) c.applyTextStyle(ne, nn);
-      if (c.projectId()) window.Store.updateNode(c.projectId(), id, before).catch(() => {});
+      if (c.projectId()) window.Store.updateNode(c.projectId(), id, value).catch(() => {});
       update();
-    } });
+    };
+    c.pushHistory({
+      undo: () => applyStyle(before),
+      redo: () => applyStyle(after)
+    });
   }
 
   function runTextCommand(cmd, arg) {
@@ -633,14 +638,19 @@ window.ElementMenu = (function () {
       document.execCommand(cmd, false, arg == null ? null : arg);
     } catch (e) { console.error('[format]', e); }
     n.text = c.rgbToHex(el.innerHTML);
+    const after = n.text || '';
     c.scheduleTextSave(id);
-    c.pushHistory({ undo: () => {
+    const applyText = value => {
       const nn = c.getNode(id);
       const ne = c.getEl(id);
-      if (nn) nn.text = before;
-      if (ne) ne.innerHTML = c.sanitize(before);
-      if (c.projectId()) window.Store.updateNode(c.projectId(), id, { text: before }).catch(() => {});
-    } });
+      if (nn) nn.text = value;
+      if (ne) ne.innerHTML = c.sanitize(value);
+      if (c.projectId()) window.Store.updateNode(c.projectId(), id, { text: value }).catch(() => {});
+    };
+    c.pushHistory({
+      undo: () => applyText(before),
+      redo: () => applyText(after)
+    });
     saveSelection();
     update();
   }

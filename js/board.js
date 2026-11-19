@@ -58,6 +58,8 @@ window.Board = (function () {
   let clipboard = [];
   const history = [];
   let historyLock = false;
+  // Отменённые действия — для повтора (Ctrl+Y / Ctrl+Shift+Z).
+  const redoStack = [];
 
   // Присутствие
   const cursorEls = new Map();   // sessionId -> DOM-элемент курсора
@@ -386,14 +388,18 @@ window.Board = (function () {
       el.addEventListener('blur', () => {
         if (el._textBefore !== undefined && el._textBefore !== node.text) {
           const before = el._textBefore;
+          const after = node.text || '';
           el._textBefore = undefined;
-          pushHistory({ undo: () => {
+          const applyText = value => {
             const n = nodes.get(node.id);
             const nodeEl = nodeEls.get(node.id);
-            if (n) n.text = before;
-            if (nodeEl) nodeEl.innerHTML = sanitizeHtml(before);
-            if (projectId) window.Store.updateNode(projectId, node.id, { text: before }).catch(handleError);
-          } });
+            if (n) n.text = value;
+            if (nodeEl) nodeEl.innerHTML = sanitizeHtml(value);
+            if (projectId) window.Store.updateNode(projectId, node.id, { text: value }).catch(handleError);
+            updateSelectionBox();
+            updateTextToolbar();
+          };
+          pushHistory({ undo: () => applyText(before), redo: () => applyText(after) });
         }
       });
     }
@@ -563,8 +569,12 @@ window.Board = (function () {
       if (boardDefaults.fontFamily) node.fontFamily = boardDefaults.fontFamily;
       if (boardDefaults.fontSize) node.fontSize = boardDefaults.fontSize;
     }
-    placeNode(node, type !== 'frame');
-    pushHistory({ undo: () => removeLocalAndRemote(node.id) });
+    const focus = type !== 'frame';
+    placeNode(node, focus);
+    pushHistory({
+      undo: () => removeLocalAndRemote(node.id),
+      redo: () => { placeNode(node, focus); selectOnly(node.id); }
+    });
   }
 
   // --- Изображения ---
@@ -681,7 +691,10 @@ window.Board = (function () {
     placeNode(node, false);
     selectOnly(node.id);
     refreshSelection();
-    pushHistory({ undo: () => removeLocalAndRemote(node.id) });
+    pushHistory({
+      undo: () => removeLocalAndRemote(node.id),
+      redo: () => { placeNode(node, false); selectOnly(node.id); }
+    });
   }
 
   function drawScale(w, h, maxSide) {
@@ -1048,13 +1061,19 @@ window.Board = (function () {
     Object.assign(n, patch);
     updateArrow(n);
     if (projectId) window.Store.updateNode(projectId, id, patch).catch(handleError);
-    if (!live) pushHistory({ undo: () => {
-      const nn = nodes.get(id);
-      if (!nn) return;
-      Object.assign(nn, before);
-      updateArrow(nn);
-      if (projectId) window.Store.updateNode(projectId, id, before).catch(() => {});
-    } });
+    if (!live) {
+      const applyArrowPatch = values => {
+        const nn = nodes.get(id);
+        if (!nn) return;
+        Object.assign(nn, values);
+        updateArrow(nn);
+        if (projectId) window.Store.updateNode(projectId, id, values).catch(() => {});
+      };
+      pushHistory({
+        undo: () => applyArrowPatch(before),
+        redo: () => applyArrowPatch(patch)
+      });
+    }
   }
 
   function createArrow(fromId, toId, freeX, freeY, opts) {
@@ -1197,13 +1216,17 @@ window.Board = (function () {
     };
     if (JSON.stringify(before) === JSON.stringify(after)) return;
     if (projectId) window.Store.updateNode(projectId, r.id, after).catch(handleError);
-    pushHistory({ undo: () => {
+    const applyArrowGeometry = values => {
       const nn = nodes.get(r.id);
       if (!nn) return;
-      Object.assign(nn, before);
+      Object.assign(nn, values);
       updateArrow(nn);
-      if (projectId) window.Store.updateNode(projectId, r.id, before).catch(() => {});
-    } });
+      if (projectId) window.Store.updateNode(projectId, r.id, values).catch(() => {});
+    };
+    pushHistory({
+      undo: () => applyArrowGeometry(before),
+      redo: () => applyArrowGeometry(after)
+    });
   }
 
   function finishArrowDraw(e) {
@@ -1247,7 +1270,11 @@ window.Board = (function () {
 
     createArrow(fromId, toId, rawEnd.x, rawEnd.y, { endAnch, startAnch });
     const newId = [...selectedIds][0];
-    pushHistory({ undo: () => removeLocalAndRemote(newId) });
+    const created = nodes.get(newId) ? snapshot(nodes.get(newId)) : null;
+    pushHistory({
+      undo: () => removeLocalAndRemote(newId),
+      redo: () => { if (created) { placeNode({ ...created }, false); selectOnly(created.id); } }
+    });
   }
 
   // Удаляем стрелки, привязанные к исчезнувшему элементу.
@@ -1360,6 +1387,8 @@ window.Board = (function () {
     if (historyLock) return;
     history.push(entry);
     if (history.length > 200) history.shift();
+    // Новое действие ломает цепочку повтора.
+    redoStack.length = 0;
   }
 
   function undo() {
@@ -1368,7 +1397,23 @@ window.Board = (function () {
     historyLock = true;
     try { entry.undo(); } catch (e) { console.error('[undo]', e); }
     historyLock = false;
+    if (entry.redo) redoStack.push(entry);
+    else redoStack.length = 0;
+    // Отмена удаления убирает id из selectedIds внутри removeNodeById, поэтому
+    // одного pruneSelection() мало: всегда пересчитываем рамку и панель.
     pruneSelection();
+    syncSelection();
+  }
+
+  function redo() {
+    if (!redoStack.length) return;
+    const entry = redoStack.pop();
+    historyLock = true;
+    try { entry.redo(); } catch (e) { console.error('[redo]', e); }
+    historyLock = false;
+    history.push(entry);
+    pruneSelection();
+    syncSelection();
   }
 
   // Если после отмены часть выделенных элементов исчезла (например, отмена
@@ -1396,8 +1441,55 @@ window.Board = (function () {
     };
   }
 
+  // Переводим data URL узла-картинки в PNG-блоб: PNG понимают Discord,
+  // Telegram, почта и другие приложения, куда пользователь вставит картинку.
+  function imageSrcToPngBlob(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth || img.width || 1;
+          c.height = img.naturalHeight || img.height || 1;
+          c.getContext('2d').drawImage(img, 0, 0);
+          c.toBlob(blob => blob ? resolve(blob) : reject(new Error('пустой PNG')), 'image/png');
+        } catch (err) { reject(err); }
+      };
+      img.onerror = () => reject(new Error('не удалось прочитать изображение'));
+      img.src = src;
+    });
+  }
+
+  // Помимо внутреннего буфера доски кладём картинку в системный буфер,
+  // чтобы её можно было вставить в другое приложение (например, Discord).
+  async function writeImagesToSystemClipboard(snapshots) {
+    if (!navigator.clipboard || !navigator.clipboard.write ||
+        typeof ClipboardItem === 'undefined') return;
+    const images = snapshots.filter(n => n && n.type === 'image' && n.src).slice(0, 5);
+    if (!images.length) return;
+    const writeItems = values => navigator.clipboard.write(
+      values.map(value => new ClipboardItem({ 'image/png': value }))
+    );
+
+    try {
+      // Promise внутри ClipboardItem можно отдать сразу — вызов остаётся
+      // внутри пользовательского жеста (Ctrl+C / пункт меню).
+      await writeItems(images.map(n => imageSrcToPngBlob(n.src)));
+    } catch (err) {
+      // Некоторые браузеры не принимают Promise в ClipboardItem — повторяем
+      // уже с готовыми блобами.
+      try {
+        const blobs = await Promise.all(images.map(n => imageSrcToPngBlob(n.src)));
+        await writeItems(blobs);
+      } catch (err2) {
+        console.warn('[clipboard] не удалось записать изображение в системный буфер:', err2);
+      }
+    }
+  }
+
   function copySelected() {
     clipboard = [...selectedIds].map(id => nodes.get(id)).filter(Boolean).map(snapshot);
+    writeImagesToSystemClipboard(clipboard);
   }
 
   function cutSelected() {
@@ -1427,7 +1519,13 @@ window.Board = (function () {
     });
     created.forEach(n => placeNode(n, false));
     setSelection(created.map(n => n.id));
-    pushHistory({ undo: () => created.forEach(n => removeLocalAndRemote(n.id)) });
+    pushHistory({
+      undo: () => created.forEach(n => removeLocalAndRemote(n.id)),
+      redo: () => {
+        created.forEach(n => placeNode({ ...n }, false));
+        setSelection(created.map(n => n.id));
+      }
+    });
   }
 
   function deleteSelected() {
@@ -1441,7 +1539,8 @@ window.Board = (function () {
     selectedIds.clear();
     syncSelection();
     pushHistory({
-      undo: () => { snaps.forEach(s => placeNode({ ...s }, false)); setSelection(snaps.map(s => s.id)); }
+      undo: () => { snaps.forEach(s => placeNode({ ...s }, false)); setSelection(snaps.map(s => s.id)); },
+      redo: () => { snaps.forEach(s => removeLocalAndRemote(s.id)); selectedIds.clear(); }
     });
   }
 
@@ -1457,7 +1556,13 @@ window.Board = (function () {
     });
     created.forEach(n => placeNode(n, false));
     setSelection(created.map(n => n.id));
-    pushHistory({ undo: () => created.forEach(n => removeLocalAndRemote(n.id)) });
+    pushHistory({
+      undo: () => created.forEach(n => removeLocalAndRemote(n.id)),
+      redo: () => {
+        created.forEach(n => placeNode({ ...n }, false));
+        setSelection(created.map(n => n.id));
+      }
+    });
   }
 
   // --- Выравнивание и распределение выделенных элементов ---
@@ -1521,7 +1626,11 @@ window.Board = (function () {
     updateSelectionBox();
     refreshArrows();
     if (window.ElementMenu) window.ElementMenu.update();
-    pushHistory({ undo: () => restorePositions(before) });
+    const after = list.map(({ n }) => ({ id: n.id, x: n.x, y: n.y }));
+    pushHistory({
+      undo: () => restorePositions(before),
+      redo: () => restorePositions(after)
+    });
   }
 
   function distributeSelection(axis) {
@@ -1551,7 +1660,11 @@ window.Board = (function () {
     updateSelectionBox();
     refreshArrows();
     if (window.ElementMenu) window.ElementMenu.update();
-    pushHistory({ undo: () => restorePositions(before) });
+    const after = list.map(({ n }) => ({ id: n.id, x: n.x, y: n.y }));
+    pushHistory({
+      undo: () => restorePositions(before),
+      redo: () => restorePositions(after)
+    });
   }
 
   // Сброс изображения к «оригинальному» размеру (с ограничением по стороне).
@@ -1565,20 +1678,23 @@ window.Board = (function () {
       const size = drawScale(img.naturalWidth || img.width, img.naturalHeight || img.height, IMG_DISPLAY_MAX);
       n.w = size.w;
       n.h = size.h;
+      const after = { w: n.w, h: n.h };
       if (el) applyNodeBox(el, n);
       updateSelectionBox();
       refreshArrows();
-      if (projectId) window.Store.updateNode(projectId, id, { w: n.w, h: n.h }).catch(handleError);
+      if (projectId) window.Store.updateNode(projectId, id, after).catch(handleError);
+      const applySize = value => {
+        const nn = nodes.get(id);
+        if (nn) { nn.w = value.w; nn.h = value.h; }
+        const ne = nodeEls.get(id);
+        if (ne && nn) applyNodeBox(ne, nn);
+        updateSelectionBox();
+        refreshArrows();
+        if (projectId) window.Store.updateNode(projectId, id, value).catch(handleError);
+      };
       pushHistory({
-        undo: () => {
-          const nn = nodes.get(id);
-          if (nn) { nn.w = before.w; nn.h = before.h; }
-          const ne = nodeEls.get(id);
-          if (ne && nn) applyNodeBox(ne, nn);
-          updateSelectionBox();
-          refreshArrows();
-          if (projectId) window.Store.updateNode(projectId, id, { w: before.w, h: before.h }).catch(handleError);
-        }
+        undo: () => applySize(before),
+        redo: () => applySize(after)
       });
     };
     img.src = n.src;
@@ -1942,7 +2058,10 @@ window.Board = (function () {
     placeNode(node, false);
     selectOnly(node.id);
     refreshSelection();
-    pushHistory({ undo: () => removeLocalAndRemote(node.id) });
+    pushHistory({
+      undo: () => removeLocalAndRemote(node.id),
+      redo: () => { placeNode(node, false); selectOnly(node.id); }
+    });
   }
 
   function setTool(tool) {
@@ -2196,18 +2315,28 @@ window.Board = (function () {
       n.w !== ow || n.h !== oh;
     if (!changed) return;
 
-    pushHistory({ undo: () => {
+    const beforeBox = { x: ox, y: oy, w: ow, h: oh };
+    const afterBox = { x: Math.round(n.x), y: Math.round(n.y), w: n.w, h: n.h };
+    const applyBox = value => {
       const nn = nodes.get(r.id);
       const ne = nodeEls.get(r.id);
       if (!nn) return;
-      nn.x = ox; nn.y = oy; nn.w = ow; nn.h = oh;
-      if (ne) { ne.style.left = ox + 'px'; ne.style.top = oy + 'px'; applyNodeBox(ne, nn); }
-      const back = { x: ox, y: oy };
-      if (ow != null) back.w = ow;
-      if (oh != null) back.h = oh;
-      if (projectId) window.Store.updateNode(projectId, r.id, back).catch(() => {});
+      nn.x = value.x; nn.y = value.y; nn.w = value.w; nn.h = value.h;
+      if (ne) {
+        ne.style.left = value.x + 'px'; ne.style.top = value.y + 'px';
+        applyNodeBox(ne, nn);
+      }
+      const data = { x: value.x, y: value.y };
+      if (value.w != null) data.w = value.w;
+      if (value.h != null) data.h = value.h;
+      if (projectId) window.Store.updateNode(projectId, r.id, data).catch(() => {});
       updateSelectionBox();
-    } });
+      refreshArrows();
+    };
+    pushHistory({
+      undo: () => applyBox(beforeBox),
+      redo: () => applyBox(afterBox)
+    });
   }
 
   function startDragGroup(e) {
@@ -2445,15 +2574,19 @@ window.Board = (function () {
     }
 
     if (moves.length) {
+      const applyMove = (m, useOld) => {
+        const n = nodes.get(m.id);
+        if (!n) return;
+        const x = useOld ? m.ox : m.x;
+        const y = useOld ? m.oy : m.y;
+        n.x = x; n.y = y;
+        const el = nodeEls.get(m.id);
+        if (el) { el.style.left = x + 'px'; el.style.top = y + 'px'; }
+        if (projectId) window.Store.updateNode(projectId, m.id, { x, y }).catch(() => {});
+      };
       pushHistory({
-        undo: () => moves.forEach(m => {
-          const n = nodes.get(m.id);
-          if (!n) return;
-          n.x = m.ox; n.y = m.oy;
-          const el = nodeEls.get(m.id);
-          if (el) { el.style.left = m.ox + 'px'; el.style.top = m.oy + 'px'; }
-          if (projectId) window.Store.updateNode(projectId, m.id, { x: m.ox, y: m.oy }).catch(() => {});
-        })
+        undo: () => { moves.forEach(m => applyMove(m, true)); refreshArrows(); updateSelectionBox(); },
+        redo: () => { moves.forEach(m => applyMove(m, false)); refreshArrows(); updateSelectionBox(); }
       });
     }
   }
@@ -2466,11 +2599,21 @@ window.Board = (function () {
     if (isEditing()) return;
 
     const ctrl = e.ctrlKey || e.metaKey;
-    if (ctrl && (e.key === 'z' || e.key === 'Z' || e.key === 'я' || e.key === 'Я')) {
+    // Повтор отменённого: Ctrl+Y или Ctrl+Shift+Z.
+    if (ctrl && (e.key === 'y' || e.key === 'Y' || e.key === 'н' || e.key === 'Н' ||
+        (e.shiftKey && (e.key === 'z' || e.key === 'Z' || e.key === 'я' || e.key === 'Я')))) {
+      e.preventDefault(); redo(); return;
+    }
+    if (ctrl && !e.shiftKey && (e.key === 'z' || e.key === 'Z' || e.key === 'я' || e.key === 'Я')) {
       e.preventDefault(); undo(); return;
     }
-    if (ctrl && (e.key === 'c' || e.key === 'C' || e.key === 'с' || e.key === 'С')) { copySelected(); return; }
-    if (ctrl && (e.key === 'x' || e.key === 'X' || e.key === 'ч' || e.key === 'Ч')) { cutSelected(); return; }
+    // Не даём браузеру перезаписать системный буфер своим текстовым копированием.
+    if (ctrl && (e.key === 'c' || e.key === 'C' || e.key === 'с' || e.key === 'С')) {
+      e.preventDefault(); copySelected(); return;
+    }
+    if (ctrl && (e.key === 'x' || e.key === 'X' || e.key === 'ч' || e.key === 'Ч')) {
+      e.preventDefault(); cutSelected(); return;
+    }
     if (ctrl && (e.key === 'v' || e.key === 'V' || e.key === 'м' || e.key === 'М')) {
       // Внутренняя вставка (скопированные элементы) — только если буфер не пуст.
       // Иначе не перехватываем: пусть сработает системный paste (внешний текст/картинки).
@@ -2535,6 +2678,8 @@ window.Board = (function () {
     applyBox: applyNodeBox,
     scheduleTextSave,
     pushHistory,
+    undo,
+    redo,
     sanitize: sanitizeHtml,
     rgbToHex,
     updateSelectionBox,
