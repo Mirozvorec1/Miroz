@@ -28,11 +28,26 @@
       <span id="board-slug" class="board-slug"></span>
       <div class="board-bar__spacer"></div>
       <div class="board-bar__tools">
-        <button class="tool" data-tool="select" title="Выбор">⇱</button>
-        <button class="tool" data-tool="sticky" title="Стикер">▭</button>
-        <button class="tool" data-tool="text" title="Текст">T</button>
-        <button class="tool" data-tool="image" title="Изображение">🖼</button>
-        <button class="tool" data-tool="frame" title="Фрейм">▢</button>
+        <button class="tool" type="button" data-tool="select" title="Выбор — выделять и перемещать объекты (V)"
+          data-tip="Выбор · выделять и перемещать объекты (V)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l14 8-6.2 1.1L9.6 18z" fill="currentColor" stroke="none"/></svg>
+        </button>
+        <button class="tool" type="button" data-tool="sticky" title="Стикер — цветная заметка (S или 2)"
+          data-tip="Стикер · цветная заметка (S или 2)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h9l5 5v13H5z"/><path d="M14 3v5h5"/></svg>
+        </button>
+        <button class="tool" type="button" data-tool="text" title="Текст — добавить текстовый блок (T или 3)"
+          data-tip="Текст · добавить текстовый блок (T или 3)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M12 6v13M9 19h6"/></svg>
+        </button>
+        <button class="tool" type="button" data-tool="image" title="Изображение — вставить картинку с устройства (I или 5)"
+          data-tip="Изображение · вставить картинку с устройства (I или 5)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="M21 16l-5.5-5.5L4 20"/></svg>
+        </button>
+        <button class="tool" type="button" data-tool="frame" title="Фигура — рамка/квадрат (F или 4)"
+          data-tip="Фигура · рамка и квадрат (F или 4)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="1.5" stroke-dasharray="4 3"/></svg>
+        </button>
       </div>
       <div class="board-bar__spacer"></div>
       <div class="board-bar__zoom">

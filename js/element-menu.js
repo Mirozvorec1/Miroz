@@ -11,16 +11,27 @@ window.ElementMenu = (function () {
   let textPanel = null;
   let arrowPanel = null;
   let alignPanel = null;
+  let shapePanel = null;
   let nodeId = null;
-  let openMenu = null;      // открытое подменю текстовой панели
+  let openMenu = null;      // открытое подменю панели
   let savedRange = null;    // сохранённое выделение внутри текста
-  let pickerEls = null;     // узлы hex-пикера
-  let pickerHsv = { h: 0, s: 0, v: 0.9 };
-  let pickerDragging = false;
+  // Состояние пикеров: по одному на каждое поле (цвет текста, стрелки, заливка…).
+  const pickers = {};
+  let pickerField = 'color';
 
   const ARROW_COLORS = [
     '#1a1a1a', '#6b7280', '#e5484d', '#f76808',
     '#f5c400', '#30a46c', '#0091ff', '#8e4ec6'
+  ];
+  const FILL_COLORS = [
+    '#ffffff', '#f3f4f6', '#ffe8a3', '#f5c400', '#ffd9c2', '#f76808',
+    '#f8c8dc', '#e5484d', '#d9cdf7', '#8e4ec6', '#c9e6ff', '#0091ff',
+    '#c8f0d8', '#30a46c', '#e6e8eb', '#1a1a1a'
+  ];
+  const STROKE_STYLES = [
+    { value: 'solid', label: 'Сплошная' },
+    { value: 'dashed', label: 'Пунктирная' },
+    { value: 'none', label: 'Отсутствует' }
   ];
   const LINE_STYLES = [
     { value: 'solid', label: 'Сплошная', dash: '' },
@@ -61,9 +72,12 @@ window.ElementMenu = (function () {
     arrowPanel.classList.add('hidden');
     alignPanel = buildAlignPanel();
     alignPanel.classList.add('hidden');
+    shapePanel = buildShapePanel();
+    shapePanel.classList.add('hidden');
     root.appendChild(textPanel);
     root.appendChild(arrowPanel);
     root.appendChild(alignPanel);
+    root.appendChild(shapePanel);
 
     root.addEventListener('mousedown', (e) => {
       if (e.target.closest('button')) e.preventDefault();
@@ -114,6 +128,7 @@ window.ElementMenu = (function () {
       if (!b) { hide(); return; }
       textPanel.classList.add('hidden');
       arrowPanel.classList.add('hidden');
+      shapePanel.classList.add('hidden');
       alignPanel.classList.remove('hidden');
       alignPanel.querySelectorAll('[data-distribute]').forEach(btn => { btn.disabled = count < 3; });
       root.classList.remove('hidden');
@@ -128,17 +143,22 @@ window.ElementMenu = (function () {
     const el = id && ctx().getEl(id);
     const isText = n && (n.type === 'text' || n.type === 'sticky');
     const isArrow = n && n.type === 'arrow';
-    if (!n || !el || (!isText && !isArrow)) { hide(); return; }
+    const isShape = n && n.type === 'frame';
+    if (!n || !el || (!isText && !isArrow && !isShape)) { hide(); return; }
 
+    // Меню закрываем только при переходе к другому объекту, а не при каждом
+    // обновлении панели — иначе палитра исчезает после первого же цвета.
+    if (id !== nodeId) closeMenu();
     nodeId = id;
     root.classList.remove('hidden');
     alignPanel.classList.add('hidden');
     textPanel.classList.toggle('hidden', !isText);
     arrowPanel.classList.toggle('hidden', !isArrow);
-    if (!isText) closeMenu();
+    shapePanel.classList.toggle('hidden', !isShape);
 
-    if (isArrow) updateArrowPanel(n);
-    else updateTextPanel(n, el);
+    if (isArrow) { pickerField = 'arrow-color'; updateArrowPanel(n); }
+    else if (isShape) { pickerField = 'frame-fill'; updateShapePanel(n); }
+    else { pickerField = 'color'; updateTextPanel(n, el); }
 
     position(el.getBoundingClientRect());
   }
@@ -169,11 +189,13 @@ window.ElementMenu = (function () {
     panel.className = 'em-panel';
     panel.innerHTML =
       '<button class="tt-btn" data-menu="color" title="Цвет текста"><span class="tt-dot"></span><span class="tt-caret">▾</span></button>' +
+      '<button class="tt-btn hidden" data-role="fill-btn" data-menu="sticky-bg" title="Цвет фона стикера"><span class="tt-dot" data-role="fill-dot"></span><span class="tt-caret">▾</span></button>' +
       '<button class="tt-btn" data-menu="font" title="Шрифт"><span class="tt-label" data-role="font">Simple</span><span class="tt-caret">▾</span></button>' +
       '<button class="tt-btn" data-menu="size" title="Размер текста"><span class="tt-label" data-role="size">Small</span><span class="tt-caret">▾</span></button>' +
       '<span class="tt-sep"></span>' +
       '<button class="tt-btn" data-cmd="bold" title="Жирный"><b>B</b></button>' +
       '<button class="tt-btn" data-cmd="italic" title="Курсив"><i>I</i></button>' +
+      '<button class="tt-btn" data-cmd="underline" title="Подчёркнутый"><u>U</u></button>' +
       '<button class="tt-btn" data-cmd="strikeThrough" title="Зачёркнутый"><s>S</s></button>' +
       '<button class="tt-btn" data-cmd="link" title="Ссылка">🔗</button>' +
       '<button class="tt-btn" data-cmd="insertUnorderedList" title="Маркированный список">☰</button>' +
@@ -213,24 +235,20 @@ window.ElementMenu = (function () {
     // Меню цвета: hex-пикер + палитра.
     const colorMenu = mkMenu('color');
     colorMenu.classList.add('tt-picker');
-    colorMenu.appendChild(buildColorPicker());
-    const swatches = document.createElement('div');
-    swatches.className = 'tt-swatches';
-    C().TEXT_COLORS.concat(C().TEXT_COLORS_LIGHT).forEach(col => {
-      const b = document.createElement('button');
-      b.className = 'tt-swatch-btn';
-      b.dataset.value = col;
-      b.title = col;
-      b.innerHTML = '<span class="tt-swatch" style="background:' + col + '"></span>';
-      swatches.appendChild(b);
-    });
-    colorMenu.appendChild(swatches);
+    colorMenu.appendChild(buildColorPicker('color'));
+    colorMenu.appendChild(swatchRow(C().TEXT_COLORS.concat(C().TEXT_COLORS_LIGHT)));
+
+    // Фон стикера — та же палитра и пикер, что и у текста.
+    const fillMenu = mkMenu('sticky-bg');
+    fillMenu.classList.add('tt-picker');
+    fillMenu.appendChild(buildColorPicker('sticky-bg'));
+    fillMenu.appendChild(swatchRow(FILL_COLORS));
 
     // Меню выравнивания.
     const alignMenu = mkMenu('align');
     C().ALIGN_ITEMS.forEach(a => alignMenu.appendChild(mkAlignItem(a)));
 
-    [fontMenu, sizeMenu, colorMenu, alignMenu].forEach(m => root_appendLater(panel, m));
+    [fontMenu, sizeMenu, colorMenu, fillMenu, alignMenu].forEach(m => root_appendLater(panel, m));
     return panel;
   }
 
@@ -239,6 +257,21 @@ window.ElementMenu = (function () {
   function root_appendLater(panel, menu) {
     deferredMenus.push(menu);
     return panel;
+  }
+
+  // Ряд цветовых образцов для любой палитры (текст, стрелки, заливка, обводка).
+  function swatchRow(colors) {
+    const row = document.createElement('div');
+    row.className = 'tt-swatches';
+    colors.forEach(col => {
+      const b = document.createElement('button');
+      b.className = 'tt-swatch-btn';
+      b.dataset.value = col;
+      b.title = col;
+      b.innerHTML = '<span class="tt-swatch" style="background:' + col + '"></span>';
+      row.appendChild(b);
+    });
+    return row;
   }
 
   function updateTextPanel(n, el) {
@@ -256,16 +289,22 @@ window.ElementMenu = (function () {
     if (alignLabel) alignLabel.innerHTML = alignSvg(n.align || 'left');
     const dot = textPanel.querySelector('.tt-dot');
     if (dot) dot.style.background = n.color || '#1a1a1a';
+    const fillBtn = textPanel.querySelector('[data-role="fill-btn"]');
+    if (fillBtn) fillBtn.classList.toggle('hidden', n.type !== 'sticky');
+    const fillDot = textPanel.querySelector('[data-role="fill-dot"]');
+    if (fillDot) fillDot.style.background = n.fill || '#f5c400';
+    markMenuItem('sticky-bg', n.fill || '');
 
     markMenuItem('font', n.fontFamily || '');
     markMenuItem('size', preset ? sz : '__none__');
     markMenuItem('align', n.align || 'left');
-    syncPickerFromNode();
+    syncPickerFromNode('color');
+    syncPickerFromNode('sticky-bg');
     const sizeInput = textPanel.querySelector('.tt-num');
     if (sizeInput && document.activeElement !== sizeInput) sizeInput.value = sz;
 
     const focused = document.activeElement === el;
-    ['bold', 'italic', 'strikeThrough', 'insertUnorderedList', 'insertOrderedList'].forEach(c => {
+    ['bold', 'italic', 'underline', 'strikeThrough', 'insertUnorderedList', 'insertOrderedList'].forEach(c => {
       const btn = textPanel.querySelector('[data-cmd="' + c + '"]');
       if (!btn) return;
       let on = false;
@@ -280,18 +319,12 @@ window.ElementMenu = (function () {
     const panel = document.createElement('div');
     panel.className = 'em-panel';
 
-    // Цвет линии.
-    panel.appendChild(mkMenuBtn('arrow-color', 'Цвет линии', '<span class="em-color-dot"></span>'));
+    // Цвет линии: такой же пикер и палитра, как у текста.
+    panel.appendChild(mkMenuBtn('arrow-color', 'Цвет линии', '<span class="em-color-dot" data-role="arrow-dot"></span>'));
     const colorMenu = mkMenu('arrow-color');
-    colorMenu.classList.add('am-colors');
-    ARROW_COLORS.forEach(col => {
-      const b = document.createElement('button');
-      b.className = 'am-swatch';
-      b.dataset.value = col;
-      b.title = col;
-      b.style.background = col;
-      colorMenu.appendChild(b);
-    });
+    colorMenu.classList.add('tt-picker');
+    colorMenu.appendChild(buildColorPicker('arrow-color'));
+    colorMenu.appendChild(swatchRow(ARROW_COLORS.concat(FILL_COLORS.slice(0, 8))));
     root_appendLater(panel, colorMenu);
 
     panel.appendChild(sep());
@@ -345,6 +378,106 @@ window.ElementMenu = (function () {
     const s = document.createElement('span');
     s.className = 'tt-sep';
     return s;
+  }
+
+  // ---------- Панель фигуры (рамки) ----------
+
+  function buildShapePanel() {
+    const panel = document.createElement('div');
+    panel.className = 'em-panel em-shape';
+
+    // Заливка.
+    panel.appendChild(mkMenuBtn('frame-fill', 'Цвет заливки', '<span class="em-color-dot" data-role="fill-dot"></span>'));
+    const fillMenu = mkMenu('frame-fill');
+    fillMenu.classList.add('tt-picker');
+    fillMenu.appendChild(buildColorPicker('frame-fill'));
+    fillMenu.appendChild(swatchRow(FILL_COLORS));
+    root_appendLater(panel, fillMenu);
+
+    panel.appendChild(sep());
+
+    // Цвет обводки.
+    panel.appendChild(mkMenuBtn('frame-stroke', 'Цвет обводки', '<span class="em-color-dot" data-role="stroke-dot"></span>'));
+    const strokeMenu = mkMenu('frame-stroke');
+    strokeMenu.classList.add('tt-picker');
+    strokeMenu.appendChild(buildColorPicker('frame-stroke'));
+    strokeMenu.appendChild(swatchRow(ARROW_COLORS));
+    root_appendLater(panel, strokeMenu);
+
+    // Формат обводки.
+    panel.appendChild(mkMenuBtn('frame-stroke-style', 'Формат обводки', '<span class="tt-label" data-role="stroke-style">Сплошная</span>'));
+    const styleMenu = mkMenu('frame-stroke-style');
+    STROKE_STYLES.forEach(s => styleMenu.appendChild(mkMenuItem(s.label, s.value)));
+    root_appendLater(panel, styleMenu);
+
+    // Толщина обводки.
+    panel.appendChild(mkMenuBtn('frame-stroke-width', 'Толщина обводки', '<span class="tt-label" data-role="stroke-width">2 px</span>'));
+    const widthMenu = mkMenu('frame-stroke-width');
+    [1, 2, 3, 4, 6, 8].forEach(px => {
+      widthMenu.appendChild(mkMenuItem(px + ' px', String(px)));
+    });
+    root_appendLater(panel, widthMenu);
+
+    // Прозрачность.
+    panel.appendChild(mkMenuBtn('frame-opacity', 'Прозрачность', '<span class="tt-label" data-role="opacity">100%</span>'));
+    const opacityMenu = mkMenu('frame-opacity');
+    [100, 75, 50, 25, 0].forEach(pct => {
+      const b = mkMenuItem(pct + '%', String(pct / 100));
+      opacityMenu.appendChild(b);
+    });
+    const divider = document.createElement('div');
+    divider.className = 'tt-divider';
+    opacityMenu.appendChild(divider);
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = '0';
+    range.max = '100';
+    range.step = '1';
+    range.value = '100';
+    range.className = 'tt-opacity';
+    range.addEventListener('focus', () => { range._before = captureStyle(nodeId); });
+    range.addEventListener('input', () => {
+      if (!nodeId) return;
+      setNodeStyle(nodeId, { opacity: Number(range.value) / 100 }, true);
+    });
+    range.addEventListener('change', () => { pushStyleHistory(nodeId, range._before); });
+    opacityMenu.appendChild(range);
+    root_appendLater(panel, opacityMenu);
+
+    return panel;
+  }
+
+  function updateShapePanel(n) {
+    if (deferredMenus.length) {
+      deferredMenus.forEach(m => root.appendChild(m));
+      deferredMenus.length = 0;
+    }
+    const fillDot = shapePanel.querySelector('[data-role="fill-dot"]');
+    if (fillDot) fillDot.style.background = n.fill || '#ffffff';
+    const strokeDot = shapePanel.querySelector('[data-role="stroke-dot"]');
+    if (strokeDot) strokeDot.style.background = n.stroke || '#b9bfcb';
+    const styleLabel = shapePanel.querySelector('[data-role="stroke-style"]');
+    const style = n.strokeStyle || 'dashed';
+    if (styleLabel) {
+      const found = STROKE_STYLES.find(s => s.value === style);
+      styleLabel.textContent = found ? found.label : 'Пунктирная';
+    }
+    const width = Number(n.strokeWidth) || 2;
+    const widthLabel = shapePanel.querySelector('[data-role="stroke-width"]');
+    if (widthLabel) widthLabel.textContent = width + ' px';
+    const pct = Math.round((n.opacity == null ? 1 : n.opacity) * 100);
+    const opLabel = shapePanel.querySelector('[data-role="opacity"]');
+    if (opLabel) opLabel.textContent = pct + '%';
+    const range = shapePanel.querySelector('.tt-opacity');
+    if (range && document.activeElement !== range) range.value = String(pct);
+
+    markMenuItem('frame-fill', n.fill || '');
+    markMenuItem('frame-stroke', n.stroke || '');
+    syncPickerFromNode('frame-fill');
+    syncPickerFromNode('frame-stroke');
+    markMenuItem('frame-stroke-style', style);
+    markMenuItem('frame-stroke-width', String(width));
+    markMenuItem('frame-opacity', String(n.opacity == null ? 1 : n.opacity));
   }
 
   // ---------- Панель выравнивания (мультивыделение) ----------
@@ -447,6 +580,7 @@ window.ElementMenu = (function () {
     setPreview('end', capIcon(end, false));
 
     markMenuItem('arrow-color', color);
+    syncPickerFromNode('arrow-color');
     markMenuItem('arrow-shape', shape);
     markMenuItem('arrow-line', line);
     markMenuItem('arrow-start', start);
@@ -545,7 +679,7 @@ window.ElementMenu = (function () {
     if (!menu) return;
     if (openMenu && openMenu !== menu) openMenu.classList.add('hidden');
     if (menu.classList.contains('hidden')) {
-      if (name === 'color') syncPickerFromNode();
+      if (pickers[name]) { pickerField = name; syncPickerFromNode(name); }
       menu.style.left = btn.offsetLeft + 'px';
       menu.classList.remove('hidden');
       openMenu = menu;
@@ -563,13 +697,18 @@ window.ElementMenu = (function () {
     const menu = item.closest('.tt-menu');
     const name = menu ? menu.dataset.menuFor : null;
     const value = item.dataset.value;
-    closeMenu();
+    // Палитру не закрываем: пользователь может подобрать несколько цветов.
     if (!nodeId || !name) return;
     const c = ctx();
     if (name === 'color') setNodeStyle(nodeId, { color: value });
     else if (name === 'font') setNodeStyle(nodeId, { fontFamily: value });
     else if (name === 'align') setNodeStyle(nodeId, { align: value });
     else if (name === 'size') setNodeStyle(nodeId, { fontSize: Number(value) });
+    else if (name === 'sticky-bg' || name === 'frame-fill') setNodeStyle(nodeId, { fill: value });
+    else if (name === 'frame-stroke') setNodeStyle(nodeId, { stroke: value });
+    else if (name === 'frame-stroke-style') setNodeStyle(nodeId, { strokeStyle: value });
+    else if (name === 'frame-stroke-width') setNodeStyle(nodeId, { strokeWidth: Number(value) });
+    else if (name === 'frame-opacity') setNodeStyle(nodeId, { opacity: Number(value) });
     else if (name === 'arrow-color') c.setArrowStyle(nodeId, { color: value });
     else if (name === 'arrow-shape') c.setArrowStyle(nodeId, { shape: value });
     else if (name === 'arrow-line') c.setArrowStyle(nodeId, { lineStyle: value });
@@ -592,7 +731,7 @@ window.ElementMenu = (function () {
     if (!n) return;
     const before = captureStyle(id);
     Object.assign(n, patch);
-    if (el) c.applyTextStyle(el, n);
+    if (el) { c.applyTextStyle(el, n); c.applyAppearance(el, n); }
     if (c.projectId()) window.Store.updateNode(c.projectId(), id, patch).catch(() => {});
     if (!live) pushStyleHistory(id, before);
     update();
@@ -600,7 +739,11 @@ window.ElementMenu = (function () {
 
   function captureStyle(id) {
     const n = ctx().getNode(id);
-    return n ? { fontFamily: n.fontFamily, fontSize: n.fontSize, color: n.color, align: n.align } : null;
+    return n ? {
+      fontFamily: n.fontFamily, fontSize: n.fontSize, color: n.color, align: n.align,
+      fill: n.fill, stroke: n.stroke, strokeStyle: n.strokeStyle,
+      strokeWidth: n.strokeWidth, opacity: n.opacity
+    } : null;
   }
 
   function pushStyleHistory(id, before) {
@@ -612,7 +755,7 @@ window.ElementMenu = (function () {
       const ne = c.getEl(id);
       if (!nn) return;
       Object.assign(nn, value);
-      if (ne) c.applyTextStyle(ne, nn);
+      if (ne) { c.applyTextStyle(ne, nn); c.applyAppearance(ne, nn); }
       if (c.projectId()) window.Store.updateNode(c.projectId(), id, value).catch(() => {});
       update();
     };
@@ -739,7 +882,9 @@ window.ElementMenu = (function () {
     return { h, s: max ? d / max : 0, v: max };
   }
 
-  function buildColorPicker() {
+  function buildColorPicker(field) {
+    const state = { field, els: null, hsv: { h: 0, s: 0, v: 0.9 }, dragging: false };
+    pickers[field] = state;
     const wrap = document.createElement('div');
     wrap.className = 'tt-picker__inner';
 
@@ -752,7 +897,7 @@ window.ElementMenu = (function () {
     eye.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
       'stroke-linecap="round" stroke-linejoin="round"><path d="M15 4l5 5-9 9-5 1 1-5z"/>' +
       '<path d="M13 6l5 5"/><path d="M4 20l3.5-3.5"/></svg>';
-    eye.addEventListener('click', pickWithEyedropper);
+    eye.addEventListener('click', () => pickWithEyedropper(field));
 
     const hex = document.createElement('input');
     hex.type = 'text';
@@ -763,9 +908,9 @@ window.ElementMenu = (function () {
     hex.addEventListener('input', () => {
       const v = normalizeHex(hex.value);
       if (!v) return;
-      pickerHsv = hexToHsv(v);
-      updatePickerUI();
-      applyPickerColor(v, true);
+      state.hsv = hexToHsv(v);
+      updatePickerUI(state);
+      applyPickerColor(field, v, true);
     });
     hex.addEventListener('change', () => { pushStyleHistory(nodeId, hex._before); });
 
@@ -787,26 +932,26 @@ window.ElementMenu = (function () {
     sv.appendChild(svHandle);
     wrap.appendChild(sv);
 
-    pickerEls = { wrap, hex, hue, hueHandle, sv, svHandle };
-    bindHueDrag(hue);
-    bindSvDrag(sv);
+    state.els = { wrap, hex, hue, hueHandle, sv, svHandle };
+    bindHueDrag(hue, state);
+    bindSvDrag(sv, state);
     return wrap;
   }
 
-  function bindHueDrag(hue) {
+  function bindHueDrag(hue, state) {
     hue.addEventListener('pointerdown', (e) => {
       e.preventDefault();
-      pickerDragging = true;
+      state.dragging = true;
       const before = captureStyle(nodeId);
       hue.setPointerCapture(e.pointerId);
       const move = (ev) => {
         const r = hue.getBoundingClientRect();
-        pickerHsv.h = clamp01((ev.clientX - r.left) / r.width) * 360;
-        updatePickerUI();
-        applyPickerColor(hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v), true);
+        state.hsv.h = clamp01((ev.clientX - r.left) / r.width) * 360;
+        updatePickerUI(state);
+        applyPickerColor(state.field, hsvToHex(state.hsv.h, state.hsv.s, state.hsv.v), true);
       };
       const up = () => {
-        pickerDragging = false;
+        state.dragging = false;
         hue.removeEventListener('pointermove', move);
         hue.removeEventListener('pointerup', up);
         pushStyleHistory(nodeId, before);
@@ -817,21 +962,21 @@ window.ElementMenu = (function () {
     });
   }
 
-  function bindSvDrag(sv) {
+  function bindSvDrag(sv, state) {
     sv.addEventListener('pointerdown', (e) => {
       e.preventDefault();
-      pickerDragging = true;
+      state.dragging = true;
       const before = captureStyle(nodeId);
       sv.setPointerCapture(e.pointerId);
       const move = (ev) => {
         const r = sv.getBoundingClientRect();
-        pickerHsv.s = clamp01((ev.clientX - r.left) / r.width);
-        pickerHsv.v = 1 - clamp01((ev.clientY - r.top) / r.height);
-        updatePickerUI();
-        applyPickerColor(hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v), true);
+        state.hsv.s = clamp01((ev.clientX - r.left) / r.width);
+        state.hsv.v = 1 - clamp01((ev.clientY - r.top) / r.height);
+        updatePickerUI(state);
+        applyPickerColor(state.field, hsvToHex(state.hsv.h, state.hsv.s, state.hsv.v), true);
       };
       const up = () => {
-        pickerDragging = false;
+        state.dragging = false;
         sv.removeEventListener('pointermove', move);
         sv.removeEventListener('pointerup', up);
         pushStyleHistory(nodeId, before);
@@ -842,45 +987,62 @@ window.ElementMenu = (function () {
     });
   }
 
-  function updatePickerUI() {
-    if (!pickerEls) return;
-    const hueHex = hsvToHex(pickerHsv.h, 1, 1);
-    pickerEls.sv.style.setProperty('--hue', hueHex);
-    pickerEls.hueHandle.style.left = (pickerHsv.h / 360 * 100) + '%';
-    pickerEls.svHandle.style.left = (pickerHsv.s * 100) + '%';
-    pickerEls.svHandle.style.top = ((1 - pickerHsv.v) * 100) + '%';
-    pickerEls.svHandle.style.background = hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v);
-    if (document.activeElement !== pickerEls.hex) {
-      pickerEls.hex.value = hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v);
+  function updatePickerUI(state) {
+    if (!state || !state.els) return;
+    const hueHex = hsvToHex(state.hsv.h, 1, 1);
+    state.els.sv.style.setProperty('--hue', hueHex);
+    state.els.hueHandle.style.left = (state.hsv.h / 360 * 100) + '%';
+    state.els.svHandle.style.left = (state.hsv.s * 100) + '%';
+    state.els.svHandle.style.top = ((1 - state.hsv.v) * 100) + '%';
+    state.els.svHandle.style.background = hsvToHex(state.hsv.h, state.hsv.s, state.hsv.v);
+    if (document.activeElement !== state.els.hex) {
+      state.els.hex.value = hsvToHex(state.hsv.h, state.hsv.s, state.hsv.v);
     }
   }
 
-  function syncPickerFromNode() {
-    if (!pickerEls || pickerDragging) return;
-    if (document.activeElement === pickerEls.hex) return;
+  function pickerProp(field) {
+    if (field === 'arrow-color') return 'color';
+    if (field === 'frame-fill' || field === 'sticky-bg') return 'fill';
+    if (field === 'frame-stroke') return 'stroke';
+    return 'color';
+  }
+
+  function syncPickerFromNode(field) {
+    const state = pickers[field];
+    if (!state || !state.els || state.dragging) return;
+    if (document.activeElement === state.els.hex) return;
     const n = nodeId && ctx().getNode(nodeId);
-    const hex = normalizeHex((n && n.color) || '') || '#1a1a1a';
-    pickerHsv = hexToHsv(hex);
-    pickerEls.hex.value = hex;
-    updatePickerUI();
+    const defaults = {
+      color: '#1a1a1a', 'arrow-color': '#1a1a1a',
+      'sticky-bg': '#f5c400', 'frame-fill': '#ffffff', 'frame-stroke': '#b9bfcb'
+    };
+    const hex = normalizeHex((n && n[pickerProp(field)]) || '') || defaults[field] || '#1a1a1a';
+    state.hsv = hexToHsv(hex);
+    state.els.hex.value = hex;
+    updatePickerUI(state);
   }
 
-  function applyPickerColor(hex, live) {
-    if (pickerEls && document.activeElement !== pickerEls.hex) pickerEls.hex.value = hex;
+  function applyPickerColor(field, hex, live) {
+    const state = pickers[field];
+    if (state && state.els && document.activeElement !== state.els.hex) state.els.hex.value = hex;
     if (!nodeId) return;
-    setNodeStyle(nodeId, { color: hex }, !!live);
+    if (field === 'arrow-color') ctx().setArrowStyle(nodeId, { color: hex }, !!live);
+    else if (field === 'frame-fill' || field === 'sticky-bg') setNodeStyle(nodeId, { fill: hex }, !!live);
+    else if (field === 'frame-stroke') setNodeStyle(nodeId, { stroke: hex }, !!live);
+    else setNodeStyle(nodeId, { color: hex }, !!live);
   }
 
-  function pickWithEyedropper() {
+  function pickWithEyedropper(field) {
     if (!window.EyeDropper) return;
     const before = captureStyle(nodeId);
     try {
       new window.EyeDropper().open().then(res => {
         const hex = normalizeHex(res && res.sRGBHex);
         if (!hex) return;
-        pickerHsv = hexToHsv(hex);
-        updatePickerUI();
-        applyPickerColor(hex, true);
+        const state = pickers[field];
+        if (state) state.hsv = hexToHsv(hex);
+        updatePickerUI(state);
+        applyPickerColor(field, hex, true);
         pushStyleHistory(nodeId, before);
       }).catch(() => { /* отменено */ });
     } catch (e) { /* не поддержано */ }

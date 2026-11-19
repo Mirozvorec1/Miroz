@@ -332,10 +332,11 @@ window.Board = (function () {
       return;
     }
 
-    ['fontFamily', 'fontSize', 'color', 'align'].forEach(k => {
+    ['fontFamily', 'fontSize', 'color', 'align', 'fill', 'stroke', 'strokeStyle', 'strokeWidth', 'opacity'].forEach(k => {
       if (node[k] !== undefined) local[k] = node[k];
     });
     applyNodeTextStyle(el, local);
+    applyNodeAppearance(el, local);
     if (!editing) {
       local.text = node.text;
       el.innerHTML = sanitizeHtml(node.text || '');
@@ -373,6 +374,7 @@ window.Board = (function () {
       el.innerHTML = sanitizeHtml(node.text || '');
       applyNodeTextStyle(el, node);
     }
+    applyNodeAppearance(el, node);
     if (selectedIds.has(node.id)) el.classList.add('is-selected');
 
     if (node.type === 'sticky' || node.type === 'text') {
@@ -413,6 +415,45 @@ window.Board = (function () {
     el.style.fontSize = node.fontSize ? node.fontSize + 'px' : '';
     el.style.color = node.color || '';
     el.style.textAlign = node.align || '';
+  }
+
+  // Яркость цвета — чтобы текст на цветном стикере оставался читаемым.
+  function contrastText(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').replace(/^#/, ''));
+    if (!m) return '';
+    const n = m[1];
+    const lum = (0.299 * parseInt(n.slice(0, 2), 16) +
+      0.587 * parseInt(n.slice(2, 4), 16) +
+      0.114 * parseInt(n.slice(4, 6), 16)) / 255;
+    return lum < 0.55 ? '#ffffff' : '#1a1a1a';
+  }
+
+  // Заливка/обводка/прозрачность стикера и фигуры (frame).
+  function applyNodeAppearance(el, node) {
+    if (!el || !node) return;
+    if (node.type !== 'sticky' && node.type !== 'frame') return;
+
+    if (node.fill) {
+      el.style.background = node.fill;
+      if (node.type === 'sticky' && !node.color) el.style.color = contrastText(node.fill);
+    } else {
+      el.style.background = '';
+      if (node.type === 'sticky' && !node.color) el.style.color = '';
+    }
+
+    if (node.type === 'frame') {
+      if (node.strokeStyle === 'none') {
+        el.style.border = 'none';
+      } else if (node.stroke || node.strokeStyle || node.strokeWidth) {
+        const width = Math.max(0, Number(node.strokeWidth) || 2);
+        const style = node.strokeStyle === 'solid' ? 'solid' : 'dashed';
+        el.style.border = width + 'px ' + style + ' ' + (node.stroke || '#b9bfcb');
+      } else {
+        el.style.border = '';
+      }
+    }
+
+    el.style.opacity = node.opacity != null ? String(node.opacity) : '';
   }
 
   // Габариты элемента. У текста и стикера высота — минимальная: при вводе
@@ -568,6 +609,11 @@ window.Board = (function () {
     if (type === 'text' || type === 'sticky') {
       if (boardDefaults.fontFamily) node.fontFamily = boardDefaults.fontFamily;
       if (boardDefaults.fontSize) node.fontSize = boardDefaults.fontSize;
+    }
+    if (type === 'frame') {
+      // Значения совпадают с CSS-умолчанием, чтобы панель не врала.
+      node.strokeStyle = 'dashed';
+      node.strokeWidth = 2;
     }
     const focus = type !== 'frame';
     placeNode(node, focus);
@@ -1433,6 +1479,8 @@ window.Board = (function () {
       text: node.text || '', src: node.src, createdBy: node.createdBy,
       fontFamily: node.fontFamily, fontSize: node.fontSize,
       color: node.color, align: node.align,
+      fill: node.fill, stroke: node.stroke, strokeStyle: node.strokeStyle,
+      strokeWidth: node.strokeWidth, opacity: node.opacity,
       fromId: node.fromId, toId: node.toId,
       x1: node.x1, y1: node.y1, x2: node.x2, y2: node.y2,
       lineStyle: node.lineStyle, startCap: node.startCap, endCap: node.endCap,
@@ -2261,7 +2309,6 @@ window.Board = (function () {
       w = r.corner === 'e' ? r.ow + dx : r.ow - dx;
       w = Math.max(MIN, snapSize(w));
       if (r.corner === 'w') x = r.ox + (r.ow - w);
-      n.w = Math.round(w);
     } else {
       const hasH = r.corner.indexOf('e') >= 0 || r.corner.indexOf('w') >= 0;
       const hasV = r.corner.indexOf('n') >= 0 || r.corner.indexOf('s') >= 0;
@@ -2285,10 +2332,19 @@ window.Board = (function () {
       }
       if (r.corner.indexOf('w') >= 0) x = r.ox + (r.ow - w);
       if (r.corner.indexOf('n') >= 0) y = r.oy + (r.oh - h);
-      n.w = Math.round(w);
-      n.h = Math.round(h);
     }
 
+    // Притягиваем ресайз к другим объектам и показываем направляющие.
+    const snapped = computeResizeSnap(r, { x, y, w, h });
+    if (snapped) {
+      x = snapped.x; y = snapped.y; w = snapped.w; h = snapped.h;
+      showGuides(snapped.guides);
+    } else {
+      hideGuides();
+    }
+
+    n.w = Math.round(w);
+    if (!side) n.h = Math.round(h);
     n.x = Math.round(x); n.y = Math.round(y);
     el.style.left = n.x + 'px';
     el.style.top = n.y + 'px';
@@ -2301,6 +2357,7 @@ window.Board = (function () {
     if (!resizing) return;
     const r = resizing;
     resizing = null;
+    hideGuides();
     viewport.style.cursor = '';
     const n = nodes.get(r.id);
     if (!n) return;
@@ -2458,6 +2515,58 @@ window.Board = (function () {
   // --- Линии выравнивания (smart guides) при перетаскивании ---
 
   const SNAP_PX = 6;   // порог прилипания на экране, px
+
+  // Линии выравнивания при ресайзе: притягиваем ту сторону, которую тянет
+  // пользователь, к краям других объектов (к их левому/правому/верхнему/нижнему краю).
+  function computeResizeSnap(r, box) {
+    const hasX = r.corner.indexOf('e') >= 0 || r.corner.indexOf('w') >= 0;
+    const hasY = r.corner.indexOf('n') >= 0 || r.corner.indexOf('s') >= 0;
+    if (!hasX && !hasY) return null;
+
+    let { x, y, w, h } = box;
+    const movingX = hasX ? [r.corner.indexOf('w') >= 0 ? x : x + w] : [];
+    const movingY = hasY ? [r.corner.indexOf('n') >= 0 ? y : y + h] : [];
+    const thr = SNAP_PX / view.scale;
+    let bestX = null, bestY = null;
+
+    nodes.forEach(n => {
+      if (n.id === r.id || n.type === 'arrow') return;
+      if (!isFinite(n.x) || !isFinite(n.y)) return;
+      const el = nodeEls.get(n.id);
+      if (!el) return;
+      const ew = el.offsetWidth || 0, eh = el.offsetHeight || 0;
+      const tX = [n.x, n.x + ew], tY = [n.y, n.y + eh];
+      movingX.forEach(gv => tX.forEach(tv => {
+        const d = tv - gv;
+        if (Math.abs(d) <= thr && (!bestX || Math.abs(d) < Math.abs(bestX.d))) bestX = { d, at: tv };
+      }));
+      movingY.forEach(gv => tY.forEach(tv => {
+        const d = tv - gv;
+        if (Math.abs(d) <= thr && (!bestY || Math.abs(d) < Math.abs(bestY.d))) bestY = { d, at: tv };
+      }));
+    });
+
+    if (!bestX && !bestY) return null;
+    const MIN = 60;
+    const guides = [];
+    if (bestX) {
+      if (r.corner.indexOf('w') >= 0) {
+        const nx = x + bestX.d, nw = w - bestX.d;
+        if (nw >= MIN) { x = nx; w = nw; guides.push({ axis: 'v', at: bestX.at }); }
+      } else if (w + bestX.d >= MIN) {
+        w += bestX.d; guides.push({ axis: 'v', at: bestX.at });
+      }
+    }
+    if (bestY) {
+      if (r.corner.indexOf('n') >= 0) {
+        const ny = y + bestY.d, nh = h - bestY.d;
+        if (nh >= MIN) { y = ny; h = nh; guides.push({ axis: 'h', at: bestY.at }); }
+      } else if (h + bestY.d >= MIN) {
+        h += bestY.d; guides.push({ axis: 'h', at: bestY.at });
+      }
+    }
+    return { x, y, w, h, guides: guides.length ? guides : null };
+  }
 
   function computeSnap(dx, dy) {
     if (!dragGroup) return null;
@@ -2675,6 +2784,7 @@ window.Board = (function () {
     selectionCount: () => selectedIds.size,
     isLocked: (id) => isLockedByOther(id),
     applyTextStyle: applyNodeTextStyle,
+    applyAppearance: applyNodeAppearance,
     applyBox: applyNodeBox,
     scheduleTextSave,
     pushHistory,

@@ -384,8 +384,12 @@ html, body {
   border-radius: 10px;
 }
 .tool {
+  position: relative;
   width: 34px;
   height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   border-radius: 7px;
   background: transparent;
@@ -393,8 +397,39 @@ html, body {
   color: var(--text-soft);
   cursor: pointer;
 }
+.tool svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .tool:hover { background: var(--bg-soft); color: var(--text); }
 .tool.is-active { background: var(--accent); color: #1a1a1a; }
+/* Подсказка инструмента при наведении */
+.tool[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: #1f2430;
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.tool[data-tip]:hover::after,
+.tool[data-tip]:focus-visible::after { opacity: 1; }
 
 .board-bar__zoom { display: flex; align-items: center; gap: 2px; }
 .zoom-value {
@@ -1143,6 +1178,7 @@ html, body {
   border: 2px solid rgba(255, 255, 255, .4); cursor: pointer;
 }
 .tt-swatch:hover { transform: scale(1.12); }
+.tt-opacity { width: 100%; accent-color: var(--primary); cursor: pointer; margin: 0 2px 6px; }
 
 .canvas-node ul, .canvas-node ol { margin: 4px 0; padding-left: 22px; }
 .canvas-node a { color: inherit; text-decoration: underline; }

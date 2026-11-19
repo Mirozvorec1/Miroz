@@ -173,6 +173,11 @@
       if (node.fontSize) data.fontSize = node.fontSize;
       if (node.color) data.color = node.color;
       if (node.align) data.align = node.align;
+      if (node.fill) data.fill = node.fill;
+      if (node.stroke) data.stroke = node.stroke;
+      if (node.strokeStyle) data.strokeStyle = node.strokeStyle;
+      if (node.strokeWidth != null) data.strokeWidth = node.strokeWidth;
+      if (node.opacity != null) data.opacity = node.opacity;
       if (node.w != null) data.w = node.w;
       if (node.h != null) data.h = node.h;
       if (node.src) data.src = node.src;
