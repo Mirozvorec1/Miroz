@@ -92,6 +92,10 @@ window.Board = (function () {
   let dragSavePending = null;
 
   const HEARTBEAT_MS = 25000; // держим присутствие живым (даже в фоновой вкладке)
+  // Позицию курсора шлём только в ответ на действия (клик, перетаскивание,
+  // зум и т.п.), не чаще чем раз в PRESENCE_ACTION_MS. Простое «ведение»
+  // мышью по экрану запросов не создаёт.
+  const PRESENCE_ACTION_MS = 200;
 
   // Показываем ошибку синхронизации один раз, чтобы не спамить.
   function handleError(err) {
@@ -1743,28 +1747,42 @@ window.Board = (function () {
   // Мгновенно рассылаем своё выделение (для чужой подсветки и блокировки).
   function broadcastSelection() {
     if (!projectId || !window.Presence.enabled()) return;
+    lastPresenceSent = Date.now();
     latestPresence = presencePayload();
     window.Presence.update(projectId, latestPresence);
   }
 
-  function onCursorMove(e) {
+  // Позиция курсора для отправки: берём из события, иначе — последнюю известную.
+  function cursorPoint(e) {
+    if (e && typeof e.clientX === 'number') {
+      lastCursorWorld = screenToWorld(e.clientX, e.clientY);
+    }
+    return lastCursorWorld;
+  }
+
+  // Отправляет позицию курсора в ответ на действие пользователя (клик,
+  // перетаскивание, зум…). С троттлингом, чтобы не спамить базу.
+  function pushCursor(e, immediate) {
     if (!projectId || !window.Presence.enabled()) return;
-    const p = screenToWorld(e.clientX, e.clientY);
+    const p = cursorPoint(e);
+    if (!p) return;
     latestPresence = presencePayload({ x: Math.round(p.x), y: Math.round(p.y) });
     const now = Date.now();
-    if (now - lastPresenceSent >= 70) {
+    const gap = immediate ? 100 : PRESENCE_ACTION_MS;
+    if (now - lastPresenceSent >= gap) {
       sendPresence();
     } else if (!presenceTrailTimer) {
       presenceTrailTimer = setTimeout(() => {
         presenceTrailTimer = null;
         sendPresence();
-      }, 70 - (now - lastPresenceSent));
+      }, gap - (now - lastPresenceSent));
     }
   }
 
   function sendPresence() {
+    if (!projectId || !latestPresence) return;
     lastPresenceSent = Date.now();
-    if (latestPresence) window.Presence.update(projectId, latestPresence);
+    window.Presence.update(projectId, latestPresence);
   }
 
   function onBeforeUnload() {
@@ -1776,7 +1794,6 @@ window.Board = (function () {
   function bindEvents() {
     viewport.addEventListener('wheel', onWheel, { passive: false });
     viewport.addEventListener('mousedown', onMouseDown);
-    viewport.addEventListener('mousemove', onCursorMove);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('keydown', onKeyDown);
@@ -1945,6 +1962,7 @@ window.Board = (function () {
       applyView();
       scheduleViewSave();
     }
+    pushCursor(e, false);
   }
 
   function zoomAt(delta, clientX, clientY) {
@@ -1970,6 +1988,9 @@ window.Board = (function () {
 
   function onMouseDown(e) {
     if (e.target.closest('.text-toolbar')) return;   // клики по панели форматирования
+
+    // Клик — одно из действий, по которым обновляем свой курсор у других.
+    pushCursor(e, true);
 
     const handle = e.target.closest('.sel-handle');
     if (handle && e.button === 0 && selectedIds.size === 1) {
@@ -2268,6 +2289,11 @@ window.Board = (function () {
 
   function onMouseMove(e) {
     lastCursorWorld = screenToWorld(e.clientX, e.clientY);
+    // Пока идёт активное действие (тащим, панорамируем, рисуем стрелку…),
+    // обновляем курсор у других участников. Обычное движение мышью — нет.
+    if (arrowDrag || arrowDraw || resizing || marquee || panning || dragGroup) {
+      pushCursor(e, false);
+    }
     if (arrowDrag) { updateArrowDrag(e); return; }
     if (arrowDraw) { updateArrowDraw(e); return; }
     if (resizing) { doResize(e); return; }
@@ -2378,6 +2404,7 @@ window.Board = (function () {
   }
 
   function onMouseUp(e) {
+    pushCursor(e, true);
     if (arrowDrag) { endArrowDrag(); return; }
     if (arrowDraw) { finishArrowDraw(e); return; }
     if (resizing) { endResize(); return; }

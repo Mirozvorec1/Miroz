@@ -137,10 +137,39 @@ html, body {
   font-weight: 600;
 }
 .btn--google:hover { background: var(--bg-soft); border-color: #d6d9e0; }
+.btn--test {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 16px;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-soft);
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+.btn--test:hover { color: var(--text); border-color: var(--accent, #4262ff); }
 .login__error {
   margin: 16px 0 0;
   color: #d33;
   font-size: 13px;
+}
+
+/* ---------- Метка демо-режима ---------- */
+.demo-badge {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 2000;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  opacity: .75;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* ---------- Экраны ---------- */
@@ -285,6 +314,18 @@ html, body {
 }
 .board-title:hover { border-color: var(--border); }
 .board-title:focus { outline: none; border-color: var(--primary); background: var(--bg); }
+.board-title-edit {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--text-soft);
+  flex: 0 0 auto;
+}
+.board-title-edit:hover { color: var(--primary); }
 
 .board-bar__tools {
   display: flex;
@@ -642,6 +683,7 @@ html, body {
   justify-content: center;
   z-index: 100;
 }
+.modal--nested { z-index: 150; }
 .modal__backdrop {
   position: absolute;
   inset: 0;
@@ -685,6 +727,45 @@ html, body {
 .modal__actions--spread { justify-content: space-between; align-items: center; }
 .modal__actions--spread > span { display: inline-flex; gap: 8px; }
 .field__input[readonly] { background: var(--bg-soft); color: var(--text-soft); cursor: default; }
+
+/* Чекбокс «Показать пароль» */
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-soft);
+  cursor: pointer;
+  user-select: none;
+}
+.check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+/* Блок пароля в настройках проекта */
+.ps-password {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+}
+.ps-password__state {
+  flex: 1 1 auto;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-soft);
+}
+.ps-password__state b { color: var(--text); }
 
 /* Предпросмотр обложки */
 .cover-preview {

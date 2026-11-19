@@ -2,14 +2,52 @@
 // Определяет проект по window.PROJECT_ID (из файла) или ?id= из адреса.
 
 (function () {
-  const projectId = window.PROJECT_ID || new URLSearchParams(location.search).get('id');
+  const params = new URLSearchParams(location.search);
+  const projectId = window.PROJECT_ID || params.get('id');
+  const demoMode = params.get('demo') === '1';
   const titleInput = document.getElementById('board-title');
   const slugLabel = document.getElementById('board-slug');
+  const settingsBtn = document.getElementById('btn-project-settings');
   let unsubProject = null;
+  let currentProject = null;
 
   function goHome(reason) {
     if (reason) alert(reason);
-    location.replace('index.html');
+    location.replace('index.html' + (demoMode ? '?demo=1' : ''));
+  }
+
+  // Разблокировка проекта по паролю действует в пределах вкладки.
+  function unloadKey() { return 'miroz.unlocked.' + projectId; }
+
+  function isUnlocked(project) {
+    try { return sessionStorage.getItem(unloadKey()) === project.passwordHash; }
+    catch (e) { return false; }
+  }
+
+  function rememberUnlocked(project) {
+    try { sessionStorage.setItem(unloadKey(), project.passwordHash); } catch (e) { /* ignore */ }
+  }
+
+  async function ensurePassword(project) {
+    if (!window.Password || !window.Password.hasPassword(project)) return true;
+    if (isUnlocked(project)) return true;
+    const ok = await window.Password.ask(project);
+    if (ok) rememberUnlocked(project);
+    return ok;
+  }
+
+  function openProjectSettings() {
+    if (!currentProject || !window.ProjectSettings) return;
+    window.ProjectSettings.open(currentProject, {
+      onSaved: (p) => {
+        currentProject = p;
+        if (titleInput) titleInput.value = p.name;
+        document.title = p.name + ' — Miroz';
+        window.Board.setDefaults(p);
+        if (window.Settings) window.Settings.updateProject(p);
+      },
+      onDeleted: () => goHome()
+    });
   }
 
   function init() {
@@ -30,14 +68,17 @@
     }
 
     // Пункт "Настройки" открывает попап (локальные + общие настройки проекта).
-    const settingsBtn = document.getElementById('menu-settings');
-    if (settingsBtn && window.Settings) {
-      settingsBtn.addEventListener('click', (e) => {
+    const menuSettingsBtn = document.getElementById('menu-settings');
+    if (menuSettingsBtn && window.Settings) {
+      menuSettingsBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (menu) menu.classList.add('hidden');
         window.Settings.openPopup({ anchor: menuBtn, projectId });
       });
     }
+
+    // Карандаш рядом с названием — та же плашка, что и в списке проектов.
+    if (settingsBtn) settingsBtn.addEventListener('click', openProjectSettings);
 
     if (titleInput) {
       titleInput.addEventListener('change', async () => {
@@ -45,6 +86,7 @@
         titleInput.value = name;
         try {
           await window.Store.renameProject(projectId, name);
+          if (currentProject) currentProject.name = name;
           document.title = name + ' — Miroz';
         } catch (err) {
           alert('Не удалось переименовать: ' + err.message);
@@ -64,9 +106,13 @@
       }
       if (!project) { goHome('Проект «' + projectId + '» не найден'); return; }
 
+      currentProject = project;
       if (titleInput) titleInput.value = project.name;
       if (slugLabel) slugLabel.textContent = '#' + projectId;
       document.title = project.name + ' — Miroz';
+
+      // Проект с паролем не открываем без проверки.
+      if (!(await ensurePassword(project))) { goHome(); return; }
 
       // Общие настройки проекта (шрифт/размер по умолчанию) — применяем и следим.
       window.Board.setDefaults(project);
@@ -76,6 +122,7 @@
       if (unsubProject) unsubProject();
       if (window.Store.subscribeProject) {
         unsubProject = window.Store.subscribeProject(projectId, (p) => {
+          currentProject = Object.assign({}, currentProject, p);
           window.Board.setDefaults(p);
           if (window.Settings) window.Settings.updateProject(p);
         });

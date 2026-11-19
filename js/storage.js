@@ -39,7 +39,7 @@ window.__LocalStore = (function () {
     if (p) { p.updatedAt = Date.now(); write(KEY_PROJECTS, projects); }
   }
 
-  async function createProject(slug, name) {
+  async function createProject(slug, name, opts) {
     const projects = read(KEY_PROJECTS, []);
     if (projects.some(p => p.id === slug)) throw new Error('ID уже занят');
     const now = Date.now();
@@ -53,6 +53,11 @@ window.__LocalStore = (function () {
       createdAt: now,
       updatedAt: now
     };
+    if (opts && opts.passwordHash && opts.passwordSalt) {
+      project.passwordHash = String(opts.passwordHash);
+      project.passwordSalt = String(opts.passwordSalt);
+      project.hasPassword = true;
+    }
     projects.push(project);
     write(KEY_PROJECTS, projects);
     return project;
@@ -73,6 +78,9 @@ window.__LocalStore = (function () {
       if (patch.cover != null) p.cover = String(patch.cover);
       if (patch.defaultFontFamily != null) p.defaultFontFamily = String(patch.defaultFontFamily);
       if (patch.defaultFontSize != null) p.defaultFontSize = Number(patch.defaultFontSize) || 16;
+      if (patch.passwordHash != null) p.passwordHash = String(patch.passwordHash);
+      if (patch.passwordSalt != null) p.passwordSalt = String(patch.passwordSalt);
+      if (patch.hasPassword != null) p.hasPassword = !!patch.hasPassword;
       p.updatedAt = Date.now();
       write(KEY_PROJECTS, projects);
     }

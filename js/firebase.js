@@ -10,6 +10,10 @@
 // остаётся локальный режим (window.Store из storage.js).
 
 (function () {
+  // Демо-режим (?demo=1): Firebase не трогаем — Store/Auth уже подменены
+  // на хранилище в памяти в js/demo.js.
+  if (window.__DEMO_MODE__) return;
+
   const cfg = window.APP_CONFIG.firebaseConfig;
 
   window.currentUser = null;
@@ -62,7 +66,7 @@
       }, err => console.error('[projects] snapshot error:', err));
     },
 
-    async createProject(slug, name) {
+    async createProject(slug, name, opts) {
       const user = window.currentUser;
       const ref = projectsCol().doc(slug);
       const existing = await ref.get();
@@ -79,6 +83,11 @@
         createdAt: now,
         updatedAt: now
       };
+      if (opts && opts.passwordHash && opts.passwordSalt) {
+        project.passwordHash = String(opts.passwordHash);
+        project.passwordSalt = String(opts.passwordSalt);
+        project.hasPassword = true;
+      }
       await ref.set(project);
       return project;
     },
@@ -95,6 +104,9 @@
       if (patch.cover != null) data.cover = String(patch.cover);
       if (patch.defaultFontFamily != null) data.defaultFontFamily = String(patch.defaultFontFamily);
       if (patch.defaultFontSize != null) data.defaultFontSize = Number(patch.defaultFontSize) || 16;
+      if (patch.passwordHash != null) data.passwordHash = String(patch.passwordHash);
+      if (patch.passwordSalt != null) data.passwordSalt = String(patch.passwordSalt);
+      if (patch.hasPassword != null) data.hasPassword = !!patch.hasPassword;
       data.updatedAt = Date.now();
       await projectsCol().doc(id).update(data);
       return { id, ...data };

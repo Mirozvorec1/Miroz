@@ -20,6 +20,11 @@
         </div>
       </div>
       <input id="board-title" class="board-title" value="Проект" spellcheck="false" />
+      <button id="btn-project-settings" class="btn btn--ghost board-title-edit" type="button" title="Настройки проекта" aria-label="Настройки проекта">
+        <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+        </svg>
+      </button>
       <span id="board-slug" class="board-slug"></span>
       <div class="board-bar__spacer"></div>
       <div class="board-bar__tools">
@@ -58,9 +63,12 @@
   <!-- PROJECT_ID -->
   <script>window.PROJECT_ID = window.PROJECT_ID || new URLSearchParams(location.search).get('id');</script>
   <script src="js/storage.js"></script>
+  <script src="js/password.js"></script>
+  <script src="js/demo.js"></script>
   <script src="js/firebase.js"></script>
   <script src="js/presence.js"></script>
   <script src="js/settings.js"></script>
+  <script src="js/project-settings.js"></script>
   <script src="js/board.js"></script>
   <script src="js/element-menu.js"></script>
   <script src="js/contextmenu.js"></script>

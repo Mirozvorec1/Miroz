@@ -11,24 +11,10 @@
   const modal = document.getElementById('modal-create');
   const npId = document.getElementById('np-id');
   const npName = document.getElementById('np-name');
+  const npPassword = document.getElementById('np-password');
+  const npShowPassword = document.getElementById('np-show-password');
   const npError = document.getElementById('np-error');
   const npPreview = document.getElementById('np-preview');
-
-  // Настройки проекта
-  const settingsModal = document.getElementById('modal-settings');
-  const spName = document.getElementById('sp-name');
-  const spId = document.getElementById('sp-id');
-  const spUrl = document.getElementById('sp-url');
-  const spCover = document.getElementById('sp-cover');
-  const spCoverImg = document.getElementById('sp-cover-img');
-  const spCoverEmpty = document.getElementById('sp-cover-empty');
-  const spError = document.getElementById('sp-error');
-  const spConfirm = document.getElementById('sp-confirm');
-  const spConfirmId = document.getElementById('sp-confirm-id');
-  const spConfirmInput = document.getElementById('sp-confirm-input');
-  const spConfirmDelete = document.getElementById('sp-confirm-delete');
-
-  let currentSettings = null;
 
   const SLUG_RE = /^[a-z0-9][a-z0-9_-]{1,38}[a-z0-9]$/;
 
@@ -42,7 +28,8 @@
   }
 
   function openBoard(slug) {
-    location.href = 'board.html?id=' + encodeURIComponent(slug);
+    const demo = window.__DEMO_MODE__ ? '&demo=1' : '';
+    location.href = 'board.html?id=' + encodeURIComponent(slug) + demo;
   }
 
   // --- Список проектов ---
@@ -90,7 +77,7 @@
       `;
       card.querySelector('.project-card__name').textContent = p.name;
       card.querySelector('.project-card__meta').textContent =
-        '#' + p.id + ' · ' + formatDate(p.updatedAt);
+        '#' + p.id + ' · ' + formatDate(p.updatedAt) + (p.hasPassword ? ' · 🔒' : '');
 
       const img = card.querySelector('.project-card__thumb-img');
       const glyph = card.querySelector('.project-card__glyph');
@@ -122,91 +109,10 @@
   // --- Настройки проекта ---
 
   function openSettings(p) {
-    currentSettings = p;
-    spError.classList.add('hidden');
-    spConfirm.classList.add('hidden');
-    spConfirmInput.value = '';
-    spConfirmDelete.disabled = true;
-
-    spId.value = p.id;
-    spUrl.textContent = '/' + p.id + '.html';
-    spName.value = p.name || '';
-    spCover.value = coverUrl(p);
-    updateCoverPreview();
-
-    settingsModal.classList.remove('hidden');
-    spName.focus();
-  }
-
-  function closeSettings() {
-    settingsModal.classList.add('hidden');
-    currentSettings = null;
-  }
-
-  function updateCoverPreview() {
-    const url = spCover.value.trim();
-    if (url) {
-      spCoverImg.src = url;
-      spCoverImg.classList.remove('hidden');
-      spCoverEmpty.classList.add('hidden');
-    } else {
-      spCoverImg.classList.add('hidden');
-      spCoverImg.removeAttribute('src');
-      spCoverEmpty.classList.remove('hidden');
-    }
-  }
-
-  async function saveSettings() {
-    if (!currentSettings) return;
-    const name = spName.value.trim() || currentSettings.id;
-    const cover = spCover.value.trim();
-    const btn = document.getElementById('sp-save');
-    btn.disabled = true;
-    spError.classList.add('hidden');
-    try {
-      await window.Store.updateProject(currentSettings.id, { name, cover });
-      closeSettings();
-      if (!unsubProjects) renderProjects();
-    } catch (err) {
-      console.error(err);
-      spError.textContent = 'Не удалось сохранить: ' + err.message;
-      spError.classList.remove('hidden');
-    } finally {
-      btn.disabled = false;
-    }
-  }
-
-  function showDeleteConfirm() {
-    if (!currentSettings) return;
-    spConfirmId.textContent = currentSettings.id;
-    spConfirmInput.value = '';
-    spConfirmDelete.disabled = true;
-    spConfirm.classList.remove('hidden');
-    spConfirmInput.focus();
-  }
-
-  function updateDeleteConfirm() {
-    spConfirmDelete.disabled =
-      !currentSettings || spConfirmInput.value.trim() !== currentSettings.id;
-  }
-
-  async function confirmDeleteProject() {
-    if (!currentSettings) return;
-    const id = currentSettings.id;
-    if (spConfirmInput.value.trim() !== id) return;
-    spConfirmDelete.disabled = true;
-    spError.classList.add('hidden');
-    try {
-      await window.Store.deleteProject(id);
-      closeSettings();
-      if (!unsubProjects) renderProjects();
-    } catch (err) {
-      console.error(err);
-      spError.textContent = 'Не удалось удалить проект: ' + err.message +
-        '\n\nПроверьте правила Firestore (Firestore → Rules).';
-      spError.classList.remove('hidden');
-      spConfirmDelete.disabled = false;
-    }
+    window.ProjectSettings.open(p, {
+      onSaved: () => { if (!unsubProjects) renderProjects(); },
+      onDeleted: () => { if (!unsubProjects) renderProjects(); }
+    });
   }
 
   function formatDate(ts) {
@@ -219,6 +125,9 @@
   function openCreateModal() {
     npId.value = '';
     npName.value = '';
+    npPassword.value = '';
+    npPassword.type = 'password';
+    npShowPassword.checked = false;
     npError.classList.add('hidden');
     updatePreview();
     modal.classList.remove('hidden');
@@ -250,7 +159,18 @@
     btn.disabled = true;
     npError.classList.add('hidden');
     try {
-      await window.Store.createProject(slug, name);
+      const password = npPassword.value;
+      const opts = {};
+      if (password) {
+        const made = await window.Password.make(password);
+        opts.passwordHash = made.hash;
+        opts.passwordSalt = made.salt;
+      }
+      await window.Store.createProject(slug, name, opts);
+      // Создатель только что задал пароль — не спрашиваем его сразу.
+      if (opts.passwordHash) {
+        try { sessionStorage.setItem('miroz.unlocked.' + slug, opts.passwordHash); } catch (e) { /* ignore */ }
+      }
       closeCreateModal();
       openBoard(slug);
     } catch (err) {
@@ -277,28 +197,20 @@
       }
     });
 
+    // Демо-режим для разработчика: локальные проекты без входа и без базы.
+    document.getElementById('btn-test').addEventListener('click', () => {
+      location.href = 'index.html?demo=1';
+    });
+
     // Модалка
     document.getElementById('np-cancel').addEventListener('click', closeCreateModal);
     document.getElementById('np-create').addEventListener('click', submitCreate);
     modal.querySelectorAll('[data-close="modal-create"]').forEach(el =>
       el.addEventListener('click', closeCreateModal));
 
-    // Модалка настроек проекта
-    document.getElementById('sp-save').addEventListener('click', saveSettings);
-    document.getElementById('sp-cancel').addEventListener('click', closeSettings);
-    settingsModal.querySelectorAll('[data-close="modal-settings"]').forEach(el =>
-      el.addEventListener('click', closeSettings));
-    document.getElementById('sp-delete').addEventListener('click', showDeleteConfirm);
-    document.getElementById('sp-confirm-cancel').addEventListener('click', () =>
-      spConfirm.classList.add('hidden'));
-    document.getElementById('sp-confirm-delete').addEventListener('click', confirmDeleteProject);
-    spConfirmInput.addEventListener('input', updateDeleteConfirm);
-    spCover.addEventListener('input', updateCoverPreview);
-    spCoverImg.addEventListener('error', () => {
-      spCoverImg.classList.add('hidden');
-      spCoverEmpty.classList.remove('hidden');
+    npShowPassword.addEventListener('change', () => {
+      npPassword.type = npShowPassword.checked ? 'text' : 'password';
     });
-    spName.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveSettings(); });
 
     npId.addEventListener('input', () => {
       const caret = npId.selectionStart;
@@ -312,6 +224,7 @@
     });
     npId.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitCreate(); });
     npName.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitCreate(); });
+    npPassword.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitCreate(); });
 
     // Реакция на смену пользователя.
     window.Auth.onChange((user) => {
@@ -324,7 +237,6 @@
       } else {
         stopProjects();
         closeCreateModal();
-        closeSettings();
         userBadge.textContent = 'Гость';
         userBadge.title = 'Не авторизован';
         document.getElementById('btn-logout').classList.add('hidden');

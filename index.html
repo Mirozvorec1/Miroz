@@ -26,6 +26,9 @@
           </svg>
           Войти через Google
         </button>
+        <button id="btn-test" class="btn btn--test" title="Демо-режим: без входа и без сохранения в базу">
+          Тест
+        </button>
         <p id="login-error" class="login__error hidden"></p>
       </div>
     </div>
@@ -76,6 +79,15 @@
         <input id="np-name" class="field__input" placeholder="Мой проект" autocomplete="off" />
       </label>
 
+      <div class="field">
+        <span class="field__label">Пароль <em>— необязательно</em></span>
+        <input id="np-password" class="field__input" type="password" placeholder="Оставьте пустым, если пароль не нужен" autocomplete="new-password" />
+        <label class="check">
+          <input id="np-show-password" type="checkbox" />
+          <span>Показать пароль</span>
+        </label>
+      </div>
+
       <p id="np-error" class="field__error hidden"></p>
 
       <div class="modal__actions">
@@ -85,63 +97,18 @@
     </div>
   </div>
 
-  <!-- Модалка настроек проекта -->
-  <div id="modal-settings" class="modal hidden">
-    <div class="modal__backdrop" data-close="modal-settings"></div>
-    <div class="modal__card">
-      <h2 class="modal__title">Настройки проекта</h2>
-
-      <div class="field">
-        <span class="field__label">Обложка <em>— ссылка на картинку</em></span>
-        <div id="sp-cover-preview" class="cover-preview">
-          <span id="sp-cover-empty">Нет обложки</span>
-          <img id="sp-cover-img" class="hidden" alt="" />
-        </div>
-        <input id="sp-cover" class="field__input" placeholder="https://…" autocomplete="off" spellcheck="false" />
-      </div>
-
-      <label class="field">
-        <span class="field__label">Название</span>
-        <input id="sp-name" class="field__input" autocomplete="off" />
-      </label>
-
-      <label class="field">
-        <span class="field__label">ID <em>— изменить нельзя</em></span>
-        <input id="sp-id" class="field__input" readonly />
-        <span class="field__hint">Адрес доски: <code id="sp-url"></code></span>
-      </label>
-
-      <p id="sp-error" class="field__error hidden"></p>
-
-      <div class="modal__actions modal__actions--spread">
-        <button id="sp-delete" class="btn btn--danger">Удалить проект</button>
-        <span>
-          <button id="sp-cancel" class="btn btn--ghost" data-close="modal-settings">Отмена</button>
-          <button id="sp-save" class="btn btn--primary">Сохранить</button>
-        </span>
-      </div>
-
-      <div id="sp-confirm" class="danger hidden">
-        <p class="danger__text">
-          Удаление необратимо. Введите ID проекта <code id="sp-confirm-id"></code>,
-          чтобы подтвердить.
-        </p>
-        <input id="sp-confirm-input" class="field__input" placeholder="введите ID" autocomplete="off" spellcheck="false" />
-        <div class="modal__actions">
-          <button id="sp-confirm-cancel" class="btn btn--ghost">Отмена</button>
-          <button id="sp-confirm-delete" class="btn btn--danger" disabled>Удалить навсегда</button>
-        </div>
-      </div>
-    </div>
-  </div>
+  <!-- Модалка настроек проекта создаётся в js/project-settings.js -->
 
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <script src="js/config.js"></script>
   <script src="js/storage.js"></script>
+  <script src="js/password.js"></script>
+  <script src="js/demo.js"></script>
   <script src="js/firebase.js"></script>
   <script src="js/settings.js"></script>
+  <script src="js/project-settings.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

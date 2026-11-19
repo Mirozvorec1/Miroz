@@ -14,6 +14,7 @@ window.Presence = (function () {
   let db = null;
 
   function init() {
+    if (window.__DEMO_MODE__) return;
     const cfg = window.APP_CONFIG.firebaseConfig;
     if (!cfg || !cfg.enabled) return;
     if (typeof firebase === 'undefined' || !firebase.database) {
