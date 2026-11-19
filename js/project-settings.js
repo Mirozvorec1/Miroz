@@ -15,6 +15,7 @@ window.ProjectSettings = (function () {
   let project = null;
   let opts = {};
   let els = {};
+  let coverData = '';
 
   function hasPassword() {
     return window.Password && window.Password.hasPassword(project);
@@ -56,12 +57,16 @@ window.ProjectSettings = (function () {
         '<h2 class="modal__title">Настройки проекта</h2>' +
 
         '<div class="field">' +
-          '<span class="field__label">Обложка <em>— ссылка на картинку</em></span>' +
+          '<span class="field__label">Обложка</span>' +
           '<div class="cover-preview">' +
             '<span data-role="cover-empty">Нет обложки</span>' +
             '<img data-role="cover-img" class="hidden" alt="" />' +
           '</div>' +
-          '<input data-role="cover" class="field__input" placeholder="https://…" autocomplete="off" spellcheck="false" />' +
+          '<div class="cover-actions">' +
+            '<button type="button" class="btn ps-password__btn" data-role="pick-cover">Загрузить с устройства</button>' +
+            '<button type="button" class="btn ps-password__btn ps-password__btn--remove hidden" data-role="clear-cover">Убрать обложку</button>' +
+          '</div>' +
+          '<span class="field__hint">JPG, PNG или WebP — картинка сожмётся автоматически.</span>' +
         '</div>' +
 
         '<label class="field">' +
@@ -121,9 +126,11 @@ window.ProjectSettings = (function () {
 
     els = {
       backdrop: overlay.querySelector('[data-role="backdrop"]'),
-      cover: overlay.querySelector('[data-role="cover"]'),
+      coverBox: overlay.querySelector('.cover-preview'),
       coverImg: overlay.querySelector('[data-role="cover-img"]'),
       coverEmpty: overlay.querySelector('[data-role="cover-empty"]'),
+      pickCover: overlay.querySelector('[data-role="pick-cover"]'),
+      clearCover: overlay.querySelector('[data-role="clear-cover"]'),
       name: overlay.querySelector('[data-role="name"]'),
       id: overlay.querySelector('[data-role="id"]'),
       url: overlay.querySelector('[data-role="url"]'),
@@ -155,7 +162,8 @@ window.ProjectSettings = (function () {
     els.confirmCancel.addEventListener('click', hideDeleteConfirm);
     els.confirmInput.addEventListener('input', updateDeleteConfirm);
     els.confirmDelete.addEventListener('click', confirmDelete);
-    els.cover.addEventListener('input', updateCoverPreview);
+    els.pickCover.addEventListener('click', pickCoverFile);
+    els.clearCover.addEventListener('click', clearCover);
     els.coverImg.addEventListener('error', () => {
       els.coverImg.classList.add('hidden');
       els.coverEmpty.classList.remove('hidden');
@@ -170,7 +178,7 @@ window.ProjectSettings = (function () {
     els.url.textContent = '/' + project.id + '.html';
     els.owner.value = project.ownerName || project.ownerId || '—';
     els.name.value = project.name || '';
-    els.cover.value = coverUrl(project);
+    coverData = coverUrl(project);
     refreshPasswordState();
     updateCoverPreview();
   }
@@ -209,16 +217,58 @@ window.ProjectSettings = (function () {
   }
 
   function updateCoverPreview() {
-    const url = els.cover.value.trim();
-    if (url) {
-      els.coverImg.src = url;
+    if (coverData) {
+      els.coverBox.style.backgroundColor = '';
+      // Возвращаем градиент под загруженной обложкой.
+      els.coverBox.style.backgroundImage = '';
+      els.coverBox.classList.remove('cover-preview--color');
+      els.coverImg.src = coverData;
       els.coverImg.classList.remove('hidden');
       els.coverEmpty.classList.add('hidden');
     } else {
+      // Пока обложки нет — ровный цвет проекта вместо серого градиента.
+      els.coverBox.style.backgroundColor = window.ProjectCover
+        ? window.ProjectCover.colorFor(project) : '';
+      // Градиент из CSS рисуется поверх цвета — убираем его явно.
+      els.coverBox.style.backgroundImage = 'none';
+      els.coverBox.classList.add('cover-preview--color');
       els.coverImg.classList.add('hidden');
       els.coverImg.removeAttribute('src');
       els.coverEmpty.classList.remove('hidden');
     }
+    els.clearCover.classList.toggle('hidden', !coverData);
+  }
+
+  // Обложка выбирается файлом с устройства и сжимается в data URL —
+  // так же, как изображения на доске. Сохраняется по кнопке «Сохранить».
+  async function pickCoverFile() {
+    if (!window.Images) { showError('Не удалось загрузить модуль изображений'); return; }
+    const file = await window.Images.pickFile();
+    if (!file) return;
+
+    els.pickCover.disabled = true;
+    const oldText = els.pickCover.textContent;
+    els.pickCover.textContent = 'Обработка…';
+    hideError();
+    try {
+      const prepared = await window.Images.prepare(file, {
+        maxSide: 1200,
+        budget: 450000
+      });
+      coverData = prepared.dataUrl;
+      updateCoverPreview();
+    } catch (err) {
+      console.error('[cover]', err);
+      showError('Не удалось загрузить обложку: ' + (err.message || err));
+    } finally {
+      els.pickCover.disabled = false;
+      els.pickCover.textContent = oldText;
+    }
+  }
+
+  function clearCover() {
+    coverData = '';
+    updateCoverPreview();
   }
 
   function showError(text) {
@@ -234,7 +284,7 @@ window.ProjectSettings = (function () {
   async function save() {
     hideError();
     const name = els.name.value.trim() || project.id;
-    const cover = els.cover.value.trim();
+    const cover = coverData;
     els.save.disabled = true;
     try {
       await window.Store.updateProject(project.id, { name, cover });

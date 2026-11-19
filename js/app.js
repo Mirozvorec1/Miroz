@@ -6,6 +6,8 @@
   const grid = document.getElementById('projects-grid');
   const empty = document.getElementById('projects-empty');
   const userBadge = document.getElementById('user-badge');
+  const userName = document.getElementById('user-name');
+  const userAvatar = document.getElementById('user-avatar');
   const loginError = document.getElementById('login-error');
 
   const modal = document.getElementById('modal-create');
@@ -33,6 +35,36 @@
   function openBoard(slug) {
     const demo = window.__DEMO_MODE__ ? '&demo=1' : '';
     location.href = 'board.html?id=' + encodeURIComponent(slug) + demo;
+  }
+
+  function openProfile() {
+    const demo = window.__DEMO_MODE__ ? '?demo=1' : '';
+    location.href = 'profile.html' + demo;
+  }
+
+  async function loadProfileAvatar(user) {
+    const uid = user && (user.uid || user.id);
+    if (!uid) return;
+    // Пока пользователь не загрузил своё фото, берем аватар аккаунта
+    // (тот, что показывается в почте) — photoURL из Google.
+    try {
+      const profile = await window.Store.getProfile(uid);
+      const src = (profile && profile.avatar) || user.photoURL || '';
+      if (src) {
+        userAvatar.src = src;
+        userAvatar.classList.remove('hidden');
+      } else {
+        userAvatar.removeAttribute('src');
+        userAvatar.classList.add('hidden');
+      }
+    } catch (e) {
+      if (user.photoURL) {
+        userAvatar.src = user.photoURL;
+        userAvatar.classList.remove('hidden');
+      } else {
+        userAvatar.classList.add('hidden');
+      }
+    }
   }
 
   // Открытие проекта из меню. Пароль спрашиваем здесь, до перехода на доску,
@@ -145,28 +177,46 @@
           <p class="project-card__name"></p>
           <span class="project-card__meta"></span>
         </div>
-        <button class="project-card__settings" title="Настройки">⚙</button>
+        <button class="project-card__info" type="button" title="Информация о проекте">i</button>
+        <button class="project-card__settings" type="button" title="Настройки">⚙</button>
       `;
       card.querySelector('.project-card__name').textContent = p.name;
+      // На карточке оставляем только название и признак приватности.
+      // Остальное вынесено в окно «Информация о проекте».
       card.querySelector('.project-card__meta').textContent =
-        '#' + p.id + ' · ' + formatDate(p.updatedAt) +
-        (p.hasPassword ? ' · 🔒' : '') +
-        (p.ownerName ? ' · 👤 ' + p.ownerName : '');
+        (window.Password && window.Password.hasPassword(p)) || p.hasPassword ? '🔒 Приватный' : '';
 
+      const thumb = card.querySelector('.project-card__thumb');
       const img = card.querySelector('.project-card__thumb-img');
       const glyph = card.querySelector('.project-card__glyph');
       const url = coverUrl(p);
       if (url) {
+        thumb.style.backgroundColor = '';
+        // Возвращаем CSS-градиент под картинкой.
+        thumb.style.backgroundImage = '';
         img.src = url;
         img.classList.remove('hidden');
         glyph.classList.add('hidden');
         img.addEventListener('error', () => {
           img.classList.add('hidden');
           glyph.classList.remove('hidden');
+          thumb.style.backgroundColor = coverColor(p);
+          thumb.style.backgroundImage = 'none';
         });
+      } else {
+        // Без обложки — сплошной цвет. Градиент из CSS нужно явно убрать:
+        // иначе он рисуется поверх цвета и заглушка выглядит серой.
+        thumb.style.backgroundColor = coverColor(p);
+        thumb.style.backgroundImage = 'none';
+        glyph.classList.add('hidden');
       }
 
       card.addEventListener('click', () => openProject(p));
+      const info = card.querySelector('.project-card__info');
+      info.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (window.ProjectInfo) window.ProjectInfo.open(p);
+      });
       const gear = card.querySelector('.project-card__settings');
       if (window.ProjectAccess && !window.ProjectAccess.isOwner(p)) {
         gear.classList.add('hidden');
@@ -184,6 +234,10 @@
     return p && p.cover ? String(p.cover).trim() : '';
   }
 
+  function coverColor(p) {
+    return window.ProjectCover ? window.ProjectCover.colorFor(p) : '';
+  }
+
   // --- Настройки проекта ---
 
   function openSettings(p) {
@@ -192,11 +246,6 @@
       onDeleted: () => { if (!unsubProjects) renderProjects(); }
     });
     if (!opened) alert('Настройки проекта может менять только его создатель.');
-  }
-
-  function formatDate(ts) {
-    if (!ts) return '';
-    return new Date(ts).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
   }
 
   // --- Модалка создания ---
@@ -265,6 +314,7 @@
   function init() {
     document.getElementById('btn-logout').addEventListener('click', () => window.Auth.signOut());
     document.getElementById('btn-create-project').addEventListener('click', openCreateModal);
+    userBadge.addEventListener('click', openProfile);
 
     document.getElementById('btn-google').addEventListener('click', async () => {
       loginError.classList.add('hidden');
@@ -308,16 +358,19 @@
     // Реакция на смену пользователя.
     window.Auth.onChange((user) => {
       if (user) {
-        userBadge.textContent = user.displayName || user.email || 'Пользователь';
-        userBadge.title = user.email || '';
+        userName.textContent = user.displayName || user.email || 'Пользователь';
+        userBadge.title = 'Открыть профиль' + (user.email ? ' · ' + user.email : '');
         document.getElementById('btn-logout').classList.remove('hidden');
         showScreen('projects');
         startProjects();
         handleUnlockFromUrl();
+        loadProfileAvatar(user);
       } else {
         stopProjects();
         closeCreateModal();
-        userBadge.textContent = 'Гость';
+        userName.textContent = 'Гость';
+        userAvatar.removeAttribute('src');
+        userAvatar.classList.add('hidden');
         userBadge.title = 'Не авторизован';
         document.getElementById('btn-logout').classList.add('hidden');
         showScreen('login');

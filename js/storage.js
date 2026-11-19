@@ -134,6 +134,24 @@ window.__LocalStore = (function () {
     return function unsubscribe() {};
   }
 
+  // --- Профиль пользователя (локальный режим) ---
+
+  function profileKey(uid) { return 'miroz.profile.' + uid; }
+
+  async function getProfile(uid) {
+    if (!uid) return null;
+    return read(profileKey(uid), null);
+  }
+
+  async function saveProfile(uid, patch) {
+    if (!uid) return null;
+    const next = Object.assign({}, read(profileKey(uid), {}) || {}, patch, {
+      updatedAt: Date.now()
+    });
+    write(profileKey(uid), next);
+    return next;
+  }
+
   // --- Вид доски (персональный для каждого пользователя) ---
 
   async function getView(projectId) {
@@ -147,6 +165,8 @@ window.__LocalStore = (function () {
   return {
     listProjects,
     getProject,
+    getProfile,
+    saveProfile,
     createProject,
     renameProject,
     updateProject,

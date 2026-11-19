@@ -22,5 +22,10 @@ service cloud.firestore {
         allow read, write: if request.auth != null;
       }
     }
+
+    // Профиль пользователя: каждый видит и меняет только свой.
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
   }
 }

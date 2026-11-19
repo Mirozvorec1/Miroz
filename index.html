@@ -42,7 +42,10 @@
         <span class="logo-text">Miroz</span>
       </div>
       <div class="topbar__actions">
-        <span id="user-badge" class="user-badge" title="Не авторизован">Гость</span>
+        <button id="user-badge" class="user-badge" type="button" title="Открыть профиль">
+          <img id="user-avatar" class="user-badge__avatar hidden" alt="" />
+          <span id="user-name">Гость</span>
+        </button>
         <button id="btn-logout" class="btn btn--ghost">Выйти</button>
       </div>
     </header>
@@ -104,12 +107,15 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <script src="js/config.js"></script>
   <script src="js/storage.js"></script>
+  <script src="js/images.js"></script>
+  <script src="js/project-colors.js"></script>
   <script src="js/password.js"></script>
   <script src="js/access.js"></script>
   <script src="js/demo.js"></script>
   <script src="js/firebase.js"></script>
   <script src="js/settings.js"></script>
   <script src="js/project-settings.js"></script>
+  <script src="js/project-info.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Профиль — Miroz</title>
+  <link rel="icon" type="image/png" href="icon.png" />
+  <link rel="apple-touch-icon" href="icon.png" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <section class="screen is-active">
+    <header class="topbar">
+      <div class="topbar__brand">
+        <img class="logo" src="icon.png" alt="Miroz" />
+        <span class="logo-text">Miroz</span>
+      </div>
+      <div class="topbar__actions">
+        <a id="profile-back" class="btn btn--ghost" href="index.html">← Проекты</a>
+        <button id="btn-logout" class="btn btn--ghost" type="button">Выйти</button>
+      </div>
+    </header>
+
+    <main class="profile">
+      <div class="profile__card">
+        <h1 class="profile__title">Профиль</h1>
+
+        <div class="profile__avatar-block">
+          <button id="profile-avatar-box" class="profile__avatar" type="button" title="Нажмите, чтобы загрузить фото">
+            <img id="profile-avatar" class="hidden" alt="Аватар" />
+            <span id="profile-initial">?</span>
+          </button>
+          <div class="profile__avatar-actions">
+            <button id="btn-avatar-pick" class="btn btn--primary" type="button">Загрузить фото</button>
+            <button id="btn-avatar-remove" class="btn btn--danger hidden" type="button">Удалить фото</button>
+            <span class="field__hint">По умолчанию — аватар из вашего аккаунта (как в почте). JPG, PNG или WebP: фото сожмётся и обрежется до квадрата.</span>
+          </div>
+        </div>
+
+        <label class="field">
+          <span class="field__label">Никнейм</span>
+          <input id="profile-name" class="field__input" readonly />
+        </label>
+
+        <label class="field">
+          <span class="field__label">Почта</span>
+          <input id="profile-email" class="field__input" readonly />
+        </label>
+
+        <p id="profile-status" class="profile__status hidden"></p>
+      </div>
+    </main>
+  </section>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/images.js"></script>
+  <script src="js/demo.js"></script>
+  <script src="js/firebase.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/profile.js"></script>
+</body>
+</html>

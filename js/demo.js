@@ -48,10 +48,13 @@
 
     if (document.getElementById('demo-badge')) return;
     const onBoard = !!document.getElementById('canvas-viewport');
+    const onProfile = !!document.querySelector('.profile');
     const badge = document.createElement('div');
     badge.id = 'demo-badge';
     badge.className = 'demo-badge';
-    badge.textContent = onBoard ? 'ТЕСТ · локально' : 'ТЕСТ · проекты в этом браузере';
+    badge.textContent = onBoard ? 'ТЕСТ · локально'
+      : onProfile ? 'ТЕСТ · локальный профиль'
+      : 'ТЕСТ · проекты в этом браузере';
     badge.title = 'Демо-режим: данные не записываются в базу';
     document.body.appendChild(badge);
   });

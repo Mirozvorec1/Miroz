@@ -59,6 +59,21 @@
       return doc.exists ? { id: doc.id, ...doc.data() } : null;
     },
 
+    // --- Профиль пользователя ---
+
+    async getProfile(uid) {
+      if (!uid) return null;
+      const doc = await db.collection('users').doc(uid).get();
+      return doc.exists ? { id: doc.id, ...doc.data() } : null;
+    },
+
+    async saveProfile(uid, patch) {
+      if (!uid) return null;
+      const data = Object.assign({}, patch, { updatedAt: Date.now() });
+      await db.collection('users').doc(uid).set(data, { merge: true });
+      return data;
+    },
+
     // Realtime-список проектов. Возвращает функцию отписки.
     subscribeProjects(onChange) {
       return projectsCol().orderBy('updatedAt', 'desc').onSnapshot(snap => {
