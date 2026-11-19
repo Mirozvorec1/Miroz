@@ -80,7 +80,8 @@ window.Password = (function () {
 
   // --- Диалог запроса пароля при открытии проекта ---
 
-  function ask(project) {
+  function ask(project, options) {
+    const cancelText = (options && options.cancelText) || 'В меню';
     return new Promise(resolve => {
       let done = false;
 
@@ -100,7 +101,7 @@ window.Password = (function () {
           '</div>' +
           '<p class="field__error hidden" data-role="err"></p>' +
           '<div class="modal__actions">' +
-            '<button class="btn btn--ghost" type="button" data-role="cancel">Отмена</button>' +
+            '<button class="btn btn--ghost" type="button" data-role="cancel">' + cancelText + '</button>' +
             '<button class="btn btn--primary" type="button" data-role="submit">Открыть</button>' +
           '</div>' +
         '</div>';
@@ -164,5 +165,35 @@ window.Password = (function () {
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  return { make, verify, hasPassword, ask, hash };
+  // --- Одноразовый пропуск ---
+  //
+  // Нужен, чтобы после ввода пароля в меню проектов не спрашивать его повторно
+  // при переходе на доску. Пропуск живёт до первого использования и не
+  // заменяет обычное запоминание входа.
+
+  function onceKey(project) {
+    return 'miroz.passonce.' + (project && project.id);
+  }
+
+  function rememberOnce(project) {
+    if (!project || !project.id) return;
+    try {
+      sessionStorage.setItem(onceKey(project), String(project.passwordHash || ''));
+    } catch (e) { /* ignore */ }
+  }
+
+  function takeOnce(project) {
+    if (!project || !project.id) return false;
+    try {
+      const key = onceKey(project);
+      const value = sessionStorage.getItem(key);
+      if (value == null) return false;
+      sessionStorage.removeItem(key);
+      return value === String(project.passwordHash || '');
+    } catch (e) {
+      return false;
+    }
+  }
+
+  return { make, verify, hasPassword, ask, hash, rememberOnce, takeOnce };
 })();

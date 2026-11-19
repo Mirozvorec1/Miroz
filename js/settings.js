@@ -260,6 +260,7 @@ window.Settings = (function () {
     }
 
     const p = ctx.project || {};
+    const canEdit = !window.ProjectAccess || window.ProjectAccess.isOwner(p);
 
     sec.appendChild(el('div', 'settings-label', 'Стандартный шрифт'));
     const fontSel = document.createElement('select');
@@ -271,6 +272,7 @@ window.Settings = (function () {
       if ((p.defaultFontFamily || '') === f.value) o.selected = true;
       fontSel.appendChild(o);
     });
+    fontSel.disabled = !canEdit;
     sec.appendChild(fontSel);
 
     const sizeRow = el('div', 'settings-row');
@@ -283,14 +285,18 @@ window.Settings = (function () {
     sizeInput.className = 'settings-input';
     sizeInput.placeholder = 'px';
     sizeInput.value = String(Number(p.defaultFontSize) || 16);
+    sizeInput.disabled = !canEdit;
     sizeRow.appendChild(sizeInput);
     sec.appendChild(sizeRow);
 
     sec.appendChild(el('p', 'settings-note',
-      'Действует для всех участников проекта: новые текстовые элементы и стикеры ' +
-      'создаются с этим шрифтом и размером.'));
+      canEdit
+        ? 'Действует для всех участников проекта: новые текстовые элементы и стикеры ' +
+          'создаются с этим шрифтом и размером.'
+        : 'Общие настройки проекта может менять только его создатель.'));
 
     const save = () => {
+      if (!canEdit) return;
       const px = Math.round(Number(sizeInput.value));
       if (!isFinite(px) || px < 6 || px > 400) return;
       const patch = { defaultFontFamily: fontSel.value, defaultFontSize: px };

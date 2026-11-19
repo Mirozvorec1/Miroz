@@ -24,8 +24,17 @@ window.ProjectSettings = (function () {
     return p && p.cover ? String(p.cover).trim() : '';
   }
 
+  // После установки/смены пароля уводим в меню проектов и сразу показываем
+  // плашку ввода пароля (index.html?unlock=<id>).
+  function goToUnlock(id) {
+    const demo = window.__DEMO_MODE__ ? '&demo=1' : '';
+    location.href = 'index.html?unlock=' + encodeURIComponent(id) + demo;
+  }
+
   function open(p, options) {
-    if (!p) return;
+    if (!p) return false;
+    // Менять настройки проекта может только его создатель (ownerId).
+    if (window.ProjectAccess && !window.ProjectAccess.isOwner(p)) return false;
     close();
     project = p;
     opts = options || {};
@@ -34,6 +43,7 @@ window.ProjectSettings = (function () {
     document.body.appendChild(overlay);
     document.addEventListener('keydown', onKeyDown);
     setTimeout(() => els.name.focus(), 0);
+    return true;
   }
 
   function build() {
@@ -65,6 +75,12 @@ window.ProjectSettings = (function () {
           '<span class="field__hint">Адрес доски: <code data-role="url"></code></span>' +
         '</label>' +
 
+        '<label class="field">' +
+          '<span class="field__label">Создатель проекта</span>' +
+          '<input data-role="owner" class="field__input" readonly />' +
+          '<span class="field__hint">Менять настройки проекта может только его создатель.</span>' +
+        '</label>' +
+
         '<div class="field">' +
           '<span class="field__label">Пароль</span>' +
           '<div class="ps-password">' +
@@ -74,6 +90,10 @@ window.ProjectSettings = (function () {
               '<button type="button" class="btn ps-password__btn ps-password__btn--remove hidden" data-role="remove-pass">Удалить пароль</button>' +
             '</span>' +
           '</div>' +
+          '<label class="check hidden" data-role="ask-wrap">' +
+            '<input type="checkbox" data-role="ask-every-time" />' +
+            '<span>Спрашивать пароль при каждом входе</span>' +
+          '</label>' +
         '</div>' +
 
         '<p class="field__error hidden" data-role="error"></p>' +
@@ -107,9 +127,12 @@ window.ProjectSettings = (function () {
       name: overlay.querySelector('[data-role="name"]'),
       id: overlay.querySelector('[data-role="id"]'),
       url: overlay.querySelector('[data-role="url"]'),
+      owner: overlay.querySelector('[data-role="owner"]'),
       passState: overlay.querySelector('[data-role="pass-state"]'),
       changePass: overlay.querySelector('[data-role="change-pass"]'),
       removePass: overlay.querySelector('[data-role="remove-pass"]'),
+      askWrap: overlay.querySelector('[data-role="ask-wrap"]'),
+      askEveryTime: overlay.querySelector('[data-role="ask-every-time"]'),
       error: overlay.querySelector('[data-role="error"]'),
       deleteBtn: overlay.querySelector('[data-role="delete"]'),
       cancel: overlay.querySelector('[data-role="cancel"]'),
@@ -127,6 +150,7 @@ window.ProjectSettings = (function () {
     els.changePass.addEventListener('click', () =>
       openPasswordPopup(hasPassword() ? 'change' : 'set'));
     els.removePass.addEventListener('click', () => openPasswordPopup('remove'));
+    els.askEveryTime.addEventListener('change', toggleAskEveryTime);
     els.deleteBtn.addEventListener('click', showDeleteConfirm);
     els.confirmCancel.addEventListener('click', hideDeleteConfirm);
     els.confirmInput.addEventListener('input', updateDeleteConfirm);
@@ -144,6 +168,7 @@ window.ProjectSettings = (function () {
     hideDeleteConfirm();
     els.id.value = project.id;
     els.url.textContent = '/' + project.id + '.html';
+    els.owner.value = project.ownerName || project.ownerId || '—';
     els.name.value = project.name || '';
     els.cover.value = coverUrl(project);
     refreshPasswordState();
@@ -152,7 +177,8 @@ window.ProjectSettings = (function () {
 
   function refreshPasswordState() {
     if (!els.passState) return;
-    if (hasPassword()) {
+    const has = hasPassword();
+    if (has) {
       els.passState.innerHTML = '<b>Установлен</b> · проект открывается по паролю';
       els.changePass.textContent = 'Изменить пароль';
       els.removePass.classList.remove('hidden');
@@ -160,6 +186,25 @@ window.ProjectSettings = (function () {
       els.passState.innerHTML = '<b>Не задан</b> · проект открывается без пароля';
       els.changePass.textContent = 'Установить пароль';
       els.removePass.classList.add('hidden');
+    }
+    els.askWrap.classList.toggle('hidden', !has);
+    els.askEveryTime.checked = project.askPasswordEveryTime !== false;
+  }
+
+  // Настройка «спрашивать пароль при каждом входе» сохраняется сразу.
+  async function toggleAskEveryTime() {
+    const value = els.askEveryTime.checked;
+    try {
+      await window.Store.updateProject(project.id, { askPasswordEveryTime: value });
+      project.askPasswordEveryTime = value;
+      if (value) {
+        // Старый пропуск вкладки больше не действует.
+        try { sessionStorage.removeItem('miroz.unlocked.' + project.id); } catch (e) { /* ignore */ }
+      }
+    } catch (err) {
+      console.error(err);
+      els.askEveryTime.checked = !value;
+      showError('Не удалось сохранить настройку: ' + err.message);
     }
   }
 
@@ -388,10 +433,11 @@ window.ProjectSettings = (function () {
         project.passwordHash = made.hash;
         project.passwordSalt = made.salt;
         project.hasPassword = true;
-        // Тот, кто только что сменил пароль, уже разблокировал проект.
-        try { sessionStorage.setItem('miroz.unlocked.' + project.id, made.hash); } catch (e) { /* ignore */ }
+        // Пароль установлен/изменён — по требованию показываем его ввод заново:
+        // переходим в меню и открываем плашку разблокировки.
+        try { sessionStorage.removeItem('miroz.unlocked.' + project.id); } catch (e) { /* ignore */ }
         closePass();
-        refreshPasswordState();
+        goToUnlock(project.id);
       } catch (e) {
         console.error('[password]', e);
         passError('Не удалось изменить пароль: ' + (e.message || e));

@@ -87,6 +87,7 @@
         project.passwordHash = String(opts.passwordHash);
         project.passwordSalt = String(opts.passwordSalt);
         project.hasPassword = true;
+        project.askPasswordEveryTime = true;
       }
       await ref.set(project);
       return project;
@@ -107,6 +108,7 @@
       if (patch.passwordHash != null) data.passwordHash = String(patch.passwordHash);
       if (patch.passwordSalt != null) data.passwordSalt = String(patch.passwordSalt);
       if (patch.hasPassword != null) data.hasPassword = !!patch.hasPassword;
+      if (patch.askPasswordEveryTime != null) data.askPasswordEveryTime = !!patch.askPasswordEveryTime;
       data.updatedAt = Date.now();
       await projectsCol().doc(id).update(data);
       return { id, ...data };

@@ -18,6 +18,9 @@
 
   const SLUG_RE = /^[a-z0-9][a-z0-9_-]{1,38}[a-z0-9]$/;
 
+  const params = new URLSearchParams(location.search);
+  let unlockHandled = false;
+
   let unsubProjects = null;
 
   // --- Роутер ---
@@ -30,6 +33,75 @@
   function openBoard(slug) {
     const demo = window.__DEMO_MODE__ ? '&demo=1' : '';
     location.href = 'board.html?id=' + encodeURIComponent(slug) + demo;
+  }
+
+  // Открытие проекта из меню. Пароль спрашиваем здесь, до перехода на доску,
+  // чтобы пользователь не видел содержимое проекта заранее.
+  async function openProject(p) {
+    if (!p) return;
+
+    if (!window.Password || !window.Password.hasPassword(p)) {
+      openBoard(p.id);
+      return;
+    }
+
+    const everyTime = p.askPasswordEveryTime !== false;
+    const unlockKey = 'miroz.unlocked.' + p.id;
+    let unlocked = false;
+    try { unlocked = sessionStorage.getItem(unlockKey) === p.passwordHash; }
+    catch (e) { /* ignore */ }
+
+    if (!everyTime && unlocked) {
+      try { sessionStorage.removeItem('miroz.passonce.' + p.id); } catch (e) { /* ignore */ }
+      openBoard(p.id);
+      return;
+    }
+
+    const ok = await window.Password.ask(p, { cancelText: 'Отмена' });
+    if (!ok) return;
+
+    // Пропуск на один переход: доска не спросит пароль повторно.
+    window.Password.rememberOnce(p);
+    if (!everyTime) {
+      try { sessionStorage.setItem(unlockKey, p.passwordHash); } catch (e) { /* ignore */ }
+    }
+    openBoard(p.id);
+  }
+
+  // После установки/смены пароля ProjectSettings уводит сюда:
+  // index.html?unlock=<id>. Показываем плашку ввода пароля; отмена оставляет
+  // пользователя в меню проектов.
+  async function handleUnlockFromUrl() {
+    if (unlockHandled) return;
+    const id = params.get('unlock');
+    if (!id) return;
+    unlockHandled = true;
+
+    // Убираем параметр, чтобы обновление страницы не повторяло запрос.
+    params.delete('unlock');
+    const qs = params.toString();
+    try {
+      history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+    } catch (e) { /* ignore */ }
+
+    let project = null;
+    try {
+      project = await window.Store.getProject(id);
+    } catch (err) {
+      console.error('Не удалось загрузить проект для разблокировки:', err);
+      return;
+    }
+    if (!project) return;
+
+    if (!window.Password || !window.Password.hasPassword(project)) {
+      openBoard(project.id);
+      return;
+    }
+
+    const ok = await window.Password.ask(project, { cancelText: 'Отмена' });
+    if (!ok) return;
+    window.Password.rememberOnce(project);
+    openBoard(project.id);
   }
 
   // --- Список проектов ---
@@ -77,7 +149,9 @@
       `;
       card.querySelector('.project-card__name').textContent = p.name;
       card.querySelector('.project-card__meta').textContent =
-        '#' + p.id + ' · ' + formatDate(p.updatedAt) + (p.hasPassword ? ' · 🔒' : '');
+        '#' + p.id + ' · ' + formatDate(p.updatedAt) +
+        (p.hasPassword ? ' · 🔒' : '') +
+        (p.ownerName ? ' · 👤 ' + p.ownerName : '');
 
       const img = card.querySelector('.project-card__thumb-img');
       const glyph = card.querySelector('.project-card__glyph');
@@ -92,8 +166,12 @@
         });
       }
 
-      card.addEventListener('click', () => openBoard(p.id));
-      card.querySelector('.project-card__settings').addEventListener('click', (e) => {
+      card.addEventListener('click', () => openProject(p));
+      const gear = card.querySelector('.project-card__settings');
+      if (window.ProjectAccess && !window.ProjectAccess.isOwner(p)) {
+        gear.classList.add('hidden');
+      }
+      gear.addEventListener('click', (e) => {
         e.stopPropagation();
         openSettings(p);
       });
@@ -109,10 +187,11 @@
   // --- Настройки проекта ---
 
   function openSettings(p) {
-    window.ProjectSettings.open(p, {
+    const opened = window.ProjectSettings.open(p, {
       onSaved: () => { if (!unsubProjects) renderProjects(); },
       onDeleted: () => { if (!unsubProjects) renderProjects(); }
     });
+    if (!opened) alert('Настройки проекта может менять только его создатель.');
   }
 
   function formatDate(ts) {
@@ -168,8 +247,8 @@
       }
       await window.Store.createProject(slug, name, opts);
       // Создатель только что задал пароль — не спрашиваем его сразу.
-      if (opts.passwordHash) {
-        try { sessionStorage.setItem('miroz.unlocked.' + slug, opts.passwordHash); } catch (e) { /* ignore */ }
+      if (opts.passwordHash && window.Password) {
+        window.Password.rememberOnce({ id: slug, passwordHash: opts.passwordHash });
       }
       closeCreateModal();
       openBoard(slug);
@@ -234,6 +313,7 @@
         document.getElementById('btn-logout').classList.remove('hidden');
         showScreen('projects');
         startProjects();
+        handleUnlockFromUrl();
       } else {
         stopProjects();
         closeCreateModal();

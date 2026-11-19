@@ -57,6 +57,7 @@ window.__LocalStore = (function () {
       project.passwordHash = String(opts.passwordHash);
       project.passwordSalt = String(opts.passwordSalt);
       project.hasPassword = true;
+      project.askPasswordEveryTime = true;
     }
     projects.push(project);
     write(KEY_PROJECTS, projects);
@@ -81,6 +82,7 @@ window.__LocalStore = (function () {
       if (patch.passwordHash != null) p.passwordHash = String(patch.passwordHash);
       if (patch.passwordSalt != null) p.passwordSalt = String(patch.passwordSalt);
       if (patch.hasPassword != null) p.hasPassword = !!patch.hasPassword;
+      if (patch.askPasswordEveryTime != null) p.askPasswordEveryTime = !!patch.askPasswordEveryTime;
       p.updatedAt = Date.now();
       write(KEY_PROJECTS, projects);
     }
