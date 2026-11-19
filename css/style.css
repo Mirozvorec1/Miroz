@@ -766,6 +766,34 @@ html, body {
   color: var(--text-soft);
 }
 .ps-password__state b { color: var(--text); }
+.ps-password__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* Кнопки с чёткой обводкой, чтобы читались именно как кнопки */
+.ps-password__btn {
+  border-color: var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 13px;
+  padding: 7px 12px;
+}
+.ps-password__btn:hover {
+  border-color: var(--primary);
+  background: var(--bg-elevated);
+  color: var(--primary);
+}
+.ps-password__btn--remove {
+  color: #d33;
+  border-color: #efc2c2;
+}
+.ps-password__btn--remove:hover {
+  background: #ffe3e3;
+  border-color: #ffc9c9;
+  color: #d33;
+}
+.ps-password__btn:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Предпросмотр обложки */
 .cover-preview {

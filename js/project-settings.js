@@ -69,7 +69,10 @@ window.ProjectSettings = (function () {
           '<span class="field__label">Пароль</span>' +
           '<div class="ps-password">' +
             '<span class="ps-password__state" data-role="pass-state"></span>' +
-            '<button type="button" class="btn btn--ghost" data-role="change-pass">Изменить пароль</button>' +
+            '<span class="ps-password__actions">' +
+              '<button type="button" class="btn ps-password__btn" data-role="change-pass">Изменить пароль</button>' +
+              '<button type="button" class="btn ps-password__btn ps-password__btn--remove hidden" data-role="remove-pass">Удалить пароль</button>' +
+            '</span>' +
           '</div>' +
         '</div>' +
 
@@ -106,6 +109,7 @@ window.ProjectSettings = (function () {
       url: overlay.querySelector('[data-role="url"]'),
       passState: overlay.querySelector('[data-role="pass-state"]'),
       changePass: overlay.querySelector('[data-role="change-pass"]'),
+      removePass: overlay.querySelector('[data-role="remove-pass"]'),
       error: overlay.querySelector('[data-role="error"]'),
       deleteBtn: overlay.querySelector('[data-role="delete"]'),
       cancel: overlay.querySelector('[data-role="cancel"]'),
@@ -120,7 +124,9 @@ window.ProjectSettings = (function () {
     els.backdrop.addEventListener('click', close);
     els.cancel.addEventListener('click', close);
     els.save.addEventListener('click', save);
-    els.changePass.addEventListener('click', openPasswordPopup);
+    els.changePass.addEventListener('click', () =>
+      openPasswordPopup(hasPassword() ? 'change' : 'set'));
+    els.removePass.addEventListener('click', () => openPasswordPopup('remove'));
     els.deleteBtn.addEventListener('click', showDeleteConfirm);
     els.confirmCancel.addEventListener('click', hideDeleteConfirm);
     els.confirmInput.addEventListener('input', updateDeleteConfirm);
@@ -149,9 +155,11 @@ window.ProjectSettings = (function () {
     if (hasPassword()) {
       els.passState.innerHTML = '<b>Установлен</b> · проект открывается по паролю';
       els.changePass.textContent = 'Изменить пароль';
+      els.removePass.classList.remove('hidden');
     } else {
       els.passState.innerHTML = '<b>Не задан</b> · проект открывается без пароля';
       els.changePass.textContent = 'Установить пароль';
+      els.removePass.classList.add('hidden');
     }
   }
 
@@ -236,37 +244,55 @@ window.ProjectSettings = (function () {
     }
   }
 
-  // --- Смена пароля ---
+  // --- Установка, смена и удаление пароля ---
 
-  function openPasswordPopup() {
+  // mode: 'set' | 'change' | 'remove'
+  function openPasswordPopup(mode) {
     if (passOverlay) return;
+    const isRemove = mode === 'remove';
+    const withCurrent = mode !== 'set';
+    if (isRemove && !hasPassword()) return;
     hideError();
-    const withCurrent = hasPassword();
+
+    const title = isRemove ? 'Удаление пароля'
+      : (mode === 'set' ? 'Установка пароля' : 'Изменение пароля');
 
     passOverlay = document.createElement('div');
     passOverlay.className = 'modal modal--nested';
     passOverlay.innerHTML =
       '<div class="modal__backdrop" data-role="pass-backdrop"></div>' +
       '<div class="modal__card">' +
-        '<h2 class="modal__title">Изменение пароля</h2>' +
+        '<h2 class="modal__title">' + title + '</h2>' +
+
+        (isRemove
+          ? '<p class="field__hint" style="margin:0 0 14px">' +
+              'Проект снова будет открываться без пароля. ' +
+              'Введите текущий пароль, чтобы подтвердить удаление.' +
+            '</p>'
+          : '') +
 
         (withCurrent
-          ? '<label class="field" data-role="current-wrap">' +
+          ? '<label class="field">' +
               '<span class="field__label">Текущий пароль</span>' +
               '<input class="field__input" type="password" data-role="current-pass" autocomplete="current-password" />' +
             '</label>'
           : '') +
 
-        '<div class="field">' +
-          '<span class="field__label">Новый пароль</span>' +
-          '<input class="field__input" type="password" data-role="new-pass" autocomplete="new-password" />' +
-          '<label class="check"><input type="checkbox" data-role="show-pass" /><span>Показать пароль</span></label>' +
-        '</div>' +
+        (isRemove
+          ? ''
+          : '<div class="field">' +
+              '<span class="field__label">Новый пароль</span>' +
+              '<input class="field__input" type="password" data-role="new-pass" autocomplete="new-password" />' +
+            '</div>') +
+
+        '<label class="check"><input type="checkbox" data-role="show-pass" /><span>Показать пароль</span></label>' +
 
         '<p class="field__error hidden" data-role="pass-error"></p>' +
         '<div class="modal__actions">' +
           '<button type="button" class="btn btn--ghost" data-role="pass-cancel">Отмена</button>' +
-          '<button type="button" class="btn btn--primary" data-role="pass-save">Сохранить</button>' +
+          '<button type="button" class="btn ' + (isRemove ? 'btn--danger' : 'btn--primary') + '" data-role="pass-save">' +
+            (isRemove ? 'Удалить пароль' : 'Сохранить') +
+          '</button>' +
         '</div>' +
       '</div>';
     document.body.appendChild(passOverlay);
@@ -301,11 +327,48 @@ window.ProjectSettings = (function () {
     show.addEventListener('change', () => {
       const type = show.checked ? 'text' : 'password';
       if (current) current.type = type;
-      next.type = type;
+      if (next) next.type = type;
     });
     backdrop.addEventListener('click', closePass);
     cancel.addEventListener('click', closePass);
     document.addEventListener('keydown', onPassKey, true);
+
+    // Проверка текущего пароля (для смены и удаления).
+    async function checkCurrent() {
+      const currentPass = current.value;
+      if (!currentPass) { passError('Введите текущий пароль'); current.focus(); return false; }
+      const ok = await window.Password.verify(project, currentPass);
+      if (!ok) { passError('Текущий пароль неверный'); current.focus(); current.select(); return false; }
+      return true;
+    }
+
+    async function removePassword() {
+      err.classList.add('hidden');
+      const currentPass = current.value;
+      if (!currentPass) { passError('Введите текущий пароль'); current.focus(); return; }
+
+      saveBtn.disabled = true;
+      try {
+        if (!(await checkCurrent())) return;
+        await window.Store.updateProject(project.id, {
+          passwordHash: '',
+          passwordSalt: '',
+          hasPassword: false
+        });
+        project.passwordHash = '';
+        project.passwordSalt = '';
+        project.hasPassword = false;
+        // Сбрасываем разблокировку текущей вкладки — пароль больше не нужен.
+        try { sessionStorage.removeItem('miroz.unlocked.' + project.id); } catch (e) { /* ignore */ }
+        closePass();
+        refreshPasswordState();
+      } catch (e) {
+        console.error('[password]', e);
+        passError('Не удалось удалить пароль: ' + (e.message || e));
+      } finally {
+        saveBtn.disabled = false;
+      }
+    }
 
     async function applyPassword() {
       err.classList.add('hidden');
@@ -314,12 +377,7 @@ window.ProjectSettings = (function () {
 
       saveBtn.disabled = true;
       try {
-        if (withCurrent) {
-          const currentPass = current.value;
-          if (!currentPass) { passError('Введите текущий пароль'); current.focus(); return; }
-          const ok = await window.Password.verify(project, currentPass);
-          if (!ok) { passError('Текущий пароль неверный'); current.focus(); current.select(); return; }
-        }
+        if (withCurrent && !(await checkCurrent())) return;
 
         const made = await window.Password.make(newPass);
         await window.Store.updateProject(project.id, {
@@ -330,6 +388,8 @@ window.ProjectSettings = (function () {
         project.passwordHash = made.hash;
         project.passwordSalt = made.salt;
         project.hasPassword = true;
+        // Тот, кто только что сменил пароль, уже разблокировал проект.
+        try { sessionStorage.setItem('miroz.unlocked.' + project.id, made.hash); } catch (e) { /* ignore */ }
         closePass();
         refreshPasswordState();
       } catch (e) {
@@ -340,11 +400,12 @@ window.ProjectSettings = (function () {
       }
     }
 
-    saveBtn.addEventListener('click', applyPassword);
+    const submit = isRemove ? removePassword : applyPassword;
+    saveBtn.addEventListener('click', submit);
     [current, next].forEach(inp => {
       if (!inp) return;
       inp.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); applyPassword(); }
+        if (e.key === 'Enter') { e.preventDefault(); submit(); }
       });
     });
     setTimeout(() => (current || next).focus(), 0);
