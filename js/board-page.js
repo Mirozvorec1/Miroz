@@ -8,6 +8,7 @@
   const titleInput = document.getElementById('board-title');
   const slugLabel = document.getElementById('board-slug');
   const settingsBtn = document.getElementById('btn-project-settings');
+  const infoBtn = document.getElementById('btn-project-info');
   let unsubProject = null;
   let currentProject = null;
   let currentIsOwner = false;
@@ -95,6 +96,13 @@
 
     // Карандаш рядом с названием — та же плашка, что и в списке проектов.
     if (settingsBtn) settingsBtn.addEventListener('click', openProjectSettings);
+
+    // «i» рядом с редактированием — информация о проекте.
+    if (infoBtn) {
+      infoBtn.addEventListener('click', () => {
+        if (currentProject && window.ProjectInfo) window.ProjectInfo.open(currentProject);
+      });
+    }
 
     if (titleInput) {
       titleInput.addEventListener('change', async () => {

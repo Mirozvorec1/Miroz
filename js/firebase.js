@@ -39,6 +39,11 @@
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
 
+  function editorName() {
+    const u = window.currentUser || window.APP_CONFIG.localUser || {};
+    return u.displayName || u.name || u.email || 'Гость';
+  }
+
   function projectsCol() { return db.collection('projects'); }
   function nodesCol(pid) { return projectsCol().doc(pid).collection('nodes'); }
   function viewKey(pid) { return 'miroz.view.' + pid; }
@@ -96,7 +101,8 @@
         ownerName: user ? (user.displayName || user.email || 'Гость') : 'Гость',
         members: user ? [user.uid] : [],
         createdAt: now,
-        updatedAt: now
+        updatedAt: now,
+        updatedBy: editorName()
       };
       if (opts && opts.passwordHash && opts.passwordSalt) {
         project.passwordHash = String(opts.passwordHash);
@@ -109,7 +115,7 @@
     },
 
     async renameProject(id, name) {
-      await projectsCol().doc(id).update({ name, updatedAt: Date.now() });
+      await projectsCol().doc(id).update({ name, updatedAt: Date.now(), updatedBy: editorName() });
       return { id, name };
     },
 
@@ -125,6 +131,7 @@
       if (patch.hasPassword != null) data.hasPassword = !!patch.hasPassword;
       if (patch.askPasswordEveryTime != null) data.askPasswordEveryTime = !!patch.askPasswordEveryTime;
       data.updatedAt = Date.now();
+      data.updatedBy = editorName();
       await projectsCol().doc(id).update(data);
       return { id, ...data };
     },
@@ -173,6 +180,7 @@
       if (node.fontSize) data.fontSize = node.fontSize;
       if (node.color) data.color = node.color;
       if (node.align) data.align = node.align;
+      if (node.figure) data.figure = node.figure;
       if (node.fill) data.fill = node.fill;
       if (node.stroke) data.stroke = node.stroke;
       if (node.strokeStyle) data.strokeStyle = node.strokeStyle;
@@ -193,20 +201,33 @@
         data.endCap = node.endCap || 'arrow';
         data.shape = node.shape || 'straight';
         if (node.bend) data.bend = node.bend;
+        if (node.c1) data.c1 = { x: node.c1.x, y: node.c1.y };
+        if (node.c2) data.c2 = { x: node.c2.x, y: node.c2.y };
+        if (node.manualPoints) {
+          data.manualPoints = node.manualPoints.map(p => ({ x: p.x, y: p.y }));
+        }
         if (node.startAnch) data.startAnch = { ux: node.startAnch.ux, uy: node.startAnch.uy };
         if (node.endAnch) data.endAnch = { ux: node.endAnch.ux, uy: node.endAnch.uy };
       }
       await nodesCol(projectId).doc(node.id).set(data);
-      await projectsCol().doc(projectId).update({ updatedAt: Date.now() }).catch(() => {});
+      await projectsCol().doc(projectId).update({
+        updatedAt: Date.now(), updatedBy: editorName()
+      }).catch(() => {});
     },
 
     async updateNode(projectId, nodeId, patch) {
       // set+merge создаёт документ, если его ещё нет (иначе "No document to update").
       await nodesCol(projectId).doc(nodeId).set({ ...patch, updatedAt: Date.now() }, { merge: true });
+      await projectsCol().doc(projectId).update({
+        updatedAt: Date.now(), updatedBy: editorName()
+      }).catch(() => {});
     },
 
     async removeNode(projectId, nodeId) {
       await nodesCol(projectId).doc(nodeId).delete();
+      await projectsCol().doc(projectId).update({
+        updatedAt: Date.now(), updatedBy: editorName()
+      }).catch(() => {});
     },
 
     // Realtime-подписка на узлы. handlers: { onAdd, onModify, onRemove, onError }.

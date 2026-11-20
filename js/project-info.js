@@ -26,6 +26,7 @@ window.ProjectInfo = (function () {
           '<div class="info-row"><dt>Создатель</dt><dd data-role="owner"></dd></div>' +
           '<div class="info-row"><dt>Доступ</dt><dd data-role="privacy"></dd></div>' +
           '<div class="info-row"><dt>Последняя правка</dt><dd data-role="updated"></dd></div>' +
+          '<div class="info-row"><dt>Последнюю правку сделал</dt><dd data-role="updated-by"></dd></div>' +
         '</dl>' +
         '<p class="field__hint info-hint">Время указано по настройкам вашего устройства.</p>' +
 
@@ -45,7 +46,8 @@ window.ProjectInfo = (function () {
       created: overlay.querySelector('[data-role="created"]'),
       owner: overlay.querySelector('[data-role="owner"]'),
       privacy: overlay.querySelector('[data-role="privacy"]'),
-      updated: overlay.querySelector('[data-role="updated"]')
+      updated: overlay.querySelector('[data-role="updated"]'),
+      updatedBy: overlay.querySelector('[data-role="updated-by"]')
     };
 
     els.backdrop.addEventListener('click', close);
@@ -87,6 +89,7 @@ window.ProjectInfo = (function () {
     els.owner.textContent = project.ownerName || project.ownerId || '—';
     els.privacy.textContent = isPrivate(project) ? '🔒 Приватный (по паролю)' : 'Публичный';
     els.updated.textContent = dateTime(project.updatedAt);
+    els.updatedBy.textContent = project.updatedBy || '—';
 
     const cover = project.cover ? String(project.cover).trim() : '';
     if (cover) {

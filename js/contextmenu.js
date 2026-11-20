@@ -54,6 +54,8 @@ window.ContextMenu = (function () {
     const hasSel = c.selectionCount() > 0;
     const node = nodeId && c.getNode(nodeId);
     const singleImage = hasSel && c.selectionCount() === 1 && node && node.type === 'image';
+    const manualCurve = hasSel && c.selectionCount() === 1 && node &&
+      node.type === 'arrow' && node.shape === 'curved-manual';
 
     if (hasSel) {
       addItem('Копировать', 'copy');
@@ -62,6 +64,7 @@ window.ContextMenu = (function () {
     }
     if (c.hasClipboard()) addItem('Вставить', 'paste');
     if (singleImage) addItem('Оригинальный размер', 'reset-image');
+    if (manualCurve) addItem('Добавить точку изгиба', 'add-arrow-point');
     if (hasSel) {
       addItem('Удалить', 'delete');
     }
@@ -108,6 +111,9 @@ window.ContextMenu = (function () {
       case 'paste': c.pasteClipboard(c.screenToWorld(root._x, root._y)); break;
       case 'delete': c.deleteSelected(); break;
       case 'reset-image': if (nodeId) c.resetImageSize(nodeId); break;
+      case 'add-arrow-point':
+        if (nodeId) c.addArrowPoint(nodeId, root._x, root._y);
+        break;
     }
   }
 

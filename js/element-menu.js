@@ -12,6 +12,11 @@ window.ElementMenu = (function () {
   let arrowPanel = null;
   let alignPanel = null;
   let shapePanel = null;
+  let multiPanel = null;
+  let groupControls = null;
+  let groupIds = [];
+  let groupType = null;
+  let lastGroupKey = '';
   let nodeId = null;
   let openMenu = null;      // открытое подменю панели
   let savedRange = null;    // сохранённое выделение внутри текста
@@ -48,8 +53,9 @@ window.ElementMenu = (function () {
   ];
   const SHAPES = [
     { value: 'straight', label: 'Прямая' },
-    { value: 'curved', label: 'Гибкая (360°)' },
-    { value: 'elbow', label: 'Гибкая (вручную)' }
+    { value: 'elbow', label: 'Прямая вручную' },
+    { value: 'curved', label: 'Гибкая' },
+    { value: 'curved-manual', label: 'Гибкая вручную' }
   ];
 
   function ctx() { return window.Board && window.Board.ctx; }
@@ -74,10 +80,13 @@ window.ElementMenu = (function () {
     alignPanel.classList.add('hidden');
     shapePanel = buildShapePanel();
     shapePanel.classList.add('hidden');
+    multiPanel = buildMultiPanel();
+    multiPanel.classList.add('hidden');
     root.appendChild(textPanel);
     root.appendChild(arrowPanel);
     root.appendChild(alignPanel);
     root.appendChild(shapePanel);
+    root.appendChild(multiPanel);
 
     root.addEventListener('mousedown', (e) => {
       if (e.target.closest('button')) e.preventDefault();
@@ -91,9 +100,9 @@ window.ElementMenu = (function () {
     if (e.target.closest('input')) return;
 
     const al = e.target.closest('[data-align]');
-    if (al) { ctx().alignSelection(al.dataset.align); return; }
+    if (al) { closeMenu(); ctx().alignSelection(al.dataset.align); return; }
     const di = e.target.closest('[data-distribute]');
-    if (di) { ctx().distributeSelection(di.dataset.distribute); return; }
+    if (di) { closeMenu(); ctx().distributeSelection(di.dataset.distribute); return; }
 
     const menuBtn = e.target.closest('[data-menu]');
     if (menuBtn) { toggleMenu(menuBtn); return; }
@@ -119,24 +128,70 @@ window.ElementMenu = (function () {
   function update() {
     if (!root) return;
 
-    // Множественное выделение — панель выравнивания.
+    // Множественное выделение: выравнивание в списке + панели всех типов,
+    // которые присутствуют в выделении (в том числе стрелки).
     const count = ctx().selectionCount();
     if (count >= 2) {
-      nodeId = null;
-      closeMenu();
+      const key = ctx().selectedIds().join('|');
+      if (key !== lastGroupKey) { closeMenu(); lastGroupKey = key; }
       const b = ctx().selectionBounds();
       if (!b) { hide(); return; }
-      textPanel.classList.add('hidden');
-      arrowPanel.classList.add('hidden');
-      shapePanel.classList.add('hidden');
-      alignPanel.classList.remove('hidden');
-      alignPanel.querySelectorAll('[data-distribute]').forEach(btn => { btn.disabled = count < 3; });
+      groupIds = ctx().selectedIds().filter(id => ctx().getNode(id));
+      const types = new Set(groupIds.map(id => ctx().getNode(id).type));
+      groupType = types.size === 1 ? [...types][0] : null;
+
+      // Возвращаем панели на root и очищаем контейнер группы.
+      [textPanel, arrowPanel, shapePanel].forEach(p => {
+        if (p.parentNode !== root) root.appendChild(p);
+        p.classList.add('hidden');
+        p.querySelectorAll('[data-cmd]').forEach(btn => btn.classList.remove('hidden'));
+      });
+      groupControls.innerHTML = '';
+      alignPanel.classList.add('hidden');
+      multiPanel.classList.remove('hidden');
+
+      const menu = root.querySelector('.tt-menu[data-menu-for="align-group"]');
+      if (menu) {
+        menu.querySelectorAll('[data-distribute]').forEach(btn => { btn.disabled = count < 3; });
+      }
+
+      const repOf = type => groupIds.find(id => ctx().getNode(id).type === type);
+      const addPanel = (panel, type, refresh) => {
+        const id = repOf(type);
+        if (!id) return;
+        groupControls.appendChild(panel);
+        panel.classList.remove('hidden');
+        panel.querySelectorAll('[data-cmd]').forEach(btn => btn.classList.add('hidden'));
+        nodeId = id;
+        refresh(ctx().getNode(id));
+      };
+      if (types.has('frame')) addPanel(shapePanel, 'frame', n => updateShapePanel(n));
+      if (types.has('arrow')) addPanel(arrowPanel, 'arrow', n => updateArrowPanel(n));
+      if (types.has('text') || types.has('sticky')) {
+        const id = repOf('text') || repOf('sticky');
+        groupControls.appendChild(textPanel);
+        textPanel.classList.remove('hidden');
+        textPanel.querySelectorAll('[data-cmd]').forEach(btn => btn.classList.add('hidden'));
+        nodeId = id;
+        updateTextPanel(ctx().getNode(id), ctx().getEl(id));
+      }
+      if (!types.size) nodeId = null;
+
       root.classList.remove('hidden');
       const a = ctx().worldToScreen(b.x, b.y);
       const bb = ctx().worldToScreen(b.x + b.w, b.y + b.h);
       position({ left: a.x, top: a.y, right: bb.x, bottom: bb.y, width: bb.x - a.x, height: bb.y - a.y });
       return;
     }
+
+    if (lastGroupKey) closeMenu();
+    groupIds = [];
+    groupType = null;
+    lastGroupKey = '';
+    [textPanel, arrowPanel, shapePanel].forEach(p => {
+      if (p.parentNode !== root) root.appendChild(p);
+      p.querySelectorAll('[data-cmd]').forEach(btn => btn.classList.remove('hidden'));
+    });
 
     const id = ctx().singleId();
     const n = id && ctx().getNode(id);
@@ -152,6 +207,7 @@ window.ElementMenu = (function () {
     nodeId = id;
     root.classList.remove('hidden');
     alignPanel.classList.add('hidden');
+    multiPanel.classList.add('hidden');
     textPanel.classList.toggle('hidden', !isText);
     arrowPanel.classList.toggle('hidden', !isArrow);
     shapePanel.classList.toggle('hidden', !isShape);
@@ -455,12 +511,12 @@ window.ElementMenu = (function () {
     const fillDot = shapePanel.querySelector('[data-role="fill-dot"]');
     if (fillDot) fillDot.style.background = n.fill || '#ffffff';
     const strokeDot = shapePanel.querySelector('[data-role="stroke-dot"]');
-    if (strokeDot) strokeDot.style.background = n.stroke || '#b9bfcb';
+    if (strokeDot) strokeDot.style.background = n.stroke || '#1a1a1a';
     const styleLabel = shapePanel.querySelector('[data-role="stroke-style"]');
-    const style = n.strokeStyle || 'dashed';
+    const style = n.strokeStyle || 'solid';
     if (styleLabel) {
       const found = STROKE_STYLES.find(s => s.value === style);
-      styleLabel.textContent = found ? found.label : 'Пунктирная';
+      styleLabel.textContent = found ? found.label : 'Сплошная';
     }
     const width = Number(n.strokeWidth) || 2;
     const widthLabel = shapePanel.querySelector('[data-role="stroke-width"]');
@@ -478,6 +534,54 @@ window.ElementMenu = (function () {
     markMenuItem('frame-stroke-style', style);
     markMenuItem('frame-stroke-width', String(width));
     markMenuItem('frame-opacity', String(n.opacity == null ? 1 : n.opacity));
+  }
+
+  // ---------- Панель группы: выравнивание + общие параметры ----------
+
+  function buildMultiPanel() {
+    const panel = document.createElement('div');
+    panel.className = 'em-panel em-multi';
+    panel.appendChild(mkMenuBtn('align-group', 'Выравнивание и распределение',
+      '<span class="tt-label">Выравнивание</span>'));
+
+    groupControls = document.createElement('div');
+    groupControls.className = 'em-group-controls';
+    panel.appendChild(groupControls);
+
+    const menu = mkMenu('align-group');
+    const defs = [
+      ['left', 'По левому краю'], ['center', 'По центру (по горизонтали)'],
+      ['right', 'По правому краю'], ['top', 'По верхнему краю'],
+      ['middle', 'По центру (по вертикали)'], ['bottom', 'По нижнему краю']
+    ];
+    defs.forEach((d, i) => {
+      if (i === 3) menu.appendChild(menuDivider());
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tt-menu__item';
+      b.dataset.align = d[0];
+      b.innerHTML = alignIco(d[0]) + '<span class="tt-menu__label"></span>';
+      b.querySelector('.tt-menu__label').textContent = d[1];
+      menu.appendChild(b);
+    });
+    menu.appendChild(menuDivider());
+    [['h', 'Распределить по горизонтали'], ['v', 'Распределить по вертикали']].forEach(d => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tt-menu__item';
+      b.dataset.distribute = d[0];
+      b.innerHTML = distributeIco(d[0]) + '<span class="tt-menu__label"></span>';
+      b.querySelector('.tt-menu__label').textContent = d[1];
+      menu.appendChild(b);
+    });
+    root_appendLater(panel, menu);
+    return panel;
+  }
+
+  function menuDivider() {
+    const d = document.createElement('div');
+    d.className = 'tt-divider';
+    return d;
   }
 
   // ---------- Панель выравнивания (мультивыделение) ----------
@@ -603,6 +707,10 @@ window.ElementMenu = (function () {
     if (kind === 'curved') {
       return '<svg width="22" height="14" viewBox="0 0 22 14"><path d="M2 2 C 11 2 11 12 20 12" ' + s + '/></svg>';
     }
+    if (kind === 'curved-manual') {
+      return '<svg width="22" height="14" viewBox="0 0 22 14"><path d="M2 2 C 11 2 11 12 20 12" ' + s + '/>' +
+        '<circle cx="9" cy="3" r="2" fill="currentColor"/><circle cx="13" cy="11" r="2" fill="currentColor"/></svg>';
+    }
     return '<svg width="22" height="14" viewBox="0 0 22 14"><path d="M2 12 L20 2" ' + s + '/></svg>';
   }
 
@@ -698,7 +806,12 @@ window.ElementMenu = (function () {
     const name = menu ? menu.dataset.menuFor : null;
     const value = item.dataset.value;
     // Палитру не закрываем: пользователь может подобрать несколько цветов.
-    if (!nodeId || !name) return;
+    if (!name) return;
+    if (groupIds.length && ctx().selectionCount() > 1) {
+      applyGroupPick(name, value);
+      return;
+    }
+    if (!nodeId) return;
     const c = ctx();
     if (name === 'color') setNodeStyle(nodeId, { color: value });
     else if (name === 'font') setNodeStyle(nodeId, { fontFamily: value });
@@ -707,7 +820,13 @@ window.ElementMenu = (function () {
     else if (name === 'sticky-bg' || name === 'frame-fill') setNodeStyle(nodeId, { fill: value });
     else if (name === 'frame-stroke') setNodeStyle(nodeId, { stroke: value });
     else if (name === 'frame-stroke-style') setNodeStyle(nodeId, { strokeStyle: value });
-    else if (name === 'frame-stroke-width') setNodeStyle(nodeId, { strokeWidth: Number(value) });
+    else if (name === 'frame-stroke-width') {
+      const cur = c.getNode(nodeId);
+      setNodeStyle(nodeId, Object.assign(
+        { strokeWidth: Number(value) },
+        cur && cur.strokeStyle === 'none' ? { strokeStyle: 'solid' } : {}
+      ));
+    }
     else if (name === 'frame-opacity') setNodeStyle(nodeId, { opacity: Number(value) });
     else if (name === 'arrow-color') c.setArrowStyle(nodeId, { color: value });
     else if (name === 'arrow-shape') c.setArrowStyle(nodeId, { shape: value });
@@ -715,6 +834,76 @@ window.ElementMenu = (function () {
     else if (name === 'arrow-start') c.setArrowStyle(nodeId, { startCap: value });
     else if (name === 'arrow-end') c.setArrowStyle(nodeId, { endCap: value });
     if (name && name.indexOf('arrow-') === 0) update();
+  }
+
+  function applyGroupPick(name, value) {
+    if (name === 'frame-stroke-width') {
+      const rep = ctx().getNode(groupIds[0]);
+      setGroupStyle(Object.assign(
+        { strokeWidth: Number(value) },
+        rep && rep.strokeStyle === 'none' ? { strokeStyle: 'solid' } : {}
+      ));
+      return;
+    }
+    const patch = {
+      color: { color: value },
+      font: { fontFamily: value },
+      align: { align: value },
+      size: { fontSize: Number(value) },
+      'sticky-bg': { fill: value },
+      'frame-fill': { fill: value },
+      'frame-stroke': { stroke: value },
+      'frame-stroke-style': { strokeStyle: value },
+      'frame-stroke-width': { strokeWidth: Number(value) },
+      'frame-opacity': { opacity: Number(value) },
+      'arrow-color': { color: value },
+      'arrow-shape': { shape: value },
+      'arrow-line': { lineStyle: value },
+      'arrow-start': { startCap: value },
+      'arrow-end': { endCap: value }
+    }[name];
+    if (patch) setGroupStyle(patch);
+  }
+
+  // Общие параметры для нескольких выделенных объектов одного типа.
+  function setGroupStyle(patch, live) {
+    const c = ctx();
+    const ids = groupIds.slice();
+    if (!ids.length) return;
+    const before = ids.map(id => captureStyle(id));
+    const apply = snapshots => ids.forEach((id, i) => {
+      const n = c.getNode(id);
+      const snap = snapshots[i];
+      if (!n || !snap) return;
+      Object.assign(n, snap);
+      const el = c.getEl(id);
+      if (el && n.type !== 'arrow') {
+        c.applyTextStyle(el, n);
+        c.applyAppearance(el, n);
+      }
+      if (n.type === 'arrow' && c.updateArrow) c.updateArrow(n);
+      if (c.projectId()) window.Store.updateNode(c.projectId(), id, snap).catch(() => {});
+    });
+    ids.forEach(id => {
+      const n = c.getNode(id);
+      if (!n) return;
+      Object.assign(n, patch);
+      const el = c.getEl(id);
+      if (el && n.type !== 'arrow') {
+        c.applyTextStyle(el, n);
+        c.applyAppearance(el, n);
+      }
+      if (n.type === 'arrow' && c.updateArrow) c.updateArrow(n);
+      if (c.projectId()) window.Store.updateNode(c.projectId(), id, patch).catch(() => {});
+    });
+    const after = ids.map(id => captureStyle(id));
+    if (!live) {
+      c.pushHistory({
+        undo: () => { apply(before); update(); },
+        redo: () => { apply(after); update(); }
+      });
+    }
+    update();
   }
 
   function setLabel(role, text) {
@@ -725,6 +914,11 @@ window.ElementMenu = (function () {
   // ---------- Применение стилей ----------
 
   function setNodeStyle(id, patch, live) {
+    // Пикер (hex, HSV, пипетка) тоже должен красивить всю группу.
+    if (groupIds.length > 1 && ctx().selectionCount() > 1) {
+      setGroupStyle(patch, live);
+      return;
+    }
     const c = ctx();
     const n = c.getNode(id);
     const el = c.getEl(id);
@@ -742,12 +936,13 @@ window.ElementMenu = (function () {
     return n ? {
       fontFamily: n.fontFamily, fontSize: n.fontSize, color: n.color, align: n.align,
       fill: n.fill, stroke: n.stroke, strokeStyle: n.strokeStyle,
-      strokeWidth: n.strokeWidth, opacity: n.opacity
+      strokeWidth: n.strokeWidth, opacity: n.opacity,
+      lineStyle: n.lineStyle, startCap: n.startCap, endCap: n.endCap, shape: n.shape
     } : null;
   }
 
   function pushStyleHistory(id, before) {
-    if (!id || !before) return;
+    if (!id || !before || groupIds.length > 1) return;
     const c = ctx();
     const after = captureStyle(id);
     const applyStyle = value => {

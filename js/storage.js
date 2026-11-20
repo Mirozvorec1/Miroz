@@ -23,6 +23,11 @@ window.__LocalStore = (function () {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
 
+  function editorName() {
+    const u = window.currentUser || window.APP_CONFIG.localUser || {};
+    return u.displayName || u.name || u.email || 'Гость';
+  }
+
   // --- Проекты ---
 
   async function listProjects() {
@@ -36,7 +41,11 @@ window.__LocalStore = (function () {
   function touchProject(id) {
     const projects = read(KEY_PROJECTS, []);
     const p = projects.find(x => x.id === id);
-    if (p) { p.updatedAt = Date.now(); write(KEY_PROJECTS, projects); }
+    if (p) {
+      p.updatedAt = Date.now();
+      p.updatedBy = editorName();
+      write(KEY_PROJECTS, projects);
+    }
   }
 
   async function createProject(slug, name, opts) {
@@ -51,7 +60,8 @@ window.__LocalStore = (function () {
       ownerName: window.APP_CONFIG.localUser.name,
       members: [],
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      updatedBy: editorName()
     };
     if (opts && opts.passwordHash && opts.passwordSalt) {
       project.passwordHash = String(opts.passwordHash);
@@ -67,7 +77,12 @@ window.__LocalStore = (function () {
   async function renameProject(id, name) {
     const projects = read(KEY_PROJECTS, []);
     const p = projects.find(x => x.id === id);
-    if (p) { p.name = name; p.updatedAt = Date.now(); write(KEY_PROJECTS, projects); }
+    if (p) {
+      p.name = name;
+      p.updatedAt = Date.now();
+      p.updatedBy = editorName();
+      write(KEY_PROJECTS, projects);
+    }
     return p;
   }
 
@@ -84,6 +99,7 @@ window.__LocalStore = (function () {
       if (patch.hasPassword != null) p.hasPassword = !!patch.hasPassword;
       if (patch.askPasswordEveryTime != null) p.askPasswordEveryTime = !!patch.askPasswordEveryTime;
       p.updatedAt = Date.now();
+      p.updatedBy = editorName();
       write(KEY_PROJECTS, projects);
     }
     return p;

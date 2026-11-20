@@ -27,6 +27,8 @@ window.Board = (function () {
     { label: 'Extra large', value: 32 },
     { label: 'Huge', value: 48 }
   ];
+  const CONNECTOR_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true">' +
+    '<path d="M2.5 8h10M9 4.5L12.5 8 9 11.5"/></svg>';
   const DEFAULT_FONT_SIZE = 16; // базовый кегль текста (см. макет)
   const RESIZE_STEP = 10;       // шаг изменения размера за уголки
   const TEXT_COLORS = [
@@ -77,6 +79,16 @@ window.Board = (function () {
   const view = { x: 0, y: 0, scale: 1 };
 
   let activeTool = 'select';
+  let activeFigure = 'rect';
+  try { activeFigure = localStorage.getItem('miroz.figure') || 'rect'; } catch (e) { /* ignore */ }
+  let activeArrowShape = 'straight';
+  try {
+    activeArrowShape = (window.Settings && window.Settings.arrowShape()) || 'straight';
+  } catch (e) { /* ignore */ }
+  let arrowCursorEl = null;
+  let figurePreview = null;
+  let arrowCursorHiEl = null;
+  let arrowCursorSnap = null;
   // Общие настройки проекта: стандартный шрифт и кегль новых элементов.
   let boardDefaults = { fontFamily: '', fontSize: DEFAULT_FONT_SIZE };
   let spaceDown = false;
@@ -134,10 +146,10 @@ window.Board = (function () {
       '<div class="sel-handle sel-handle--side" data-corner="w"></div>' +
       '<div class="sel-handle sel-handle--h" data-corner="n"></div>' +
       '<div class="sel-handle sel-handle--h" data-corner="s"></div>' +
-      '<div class="sel-ball" data-ball="n"></div>' +
-      '<div class="sel-ball" data-ball="e"></div>' +
-      '<div class="sel-ball" data-ball="s"></div>' +
-      '<div class="sel-ball" data-ball="w"></div>';
+      '<button class="sel-ball" type="button" data-ball="n" title="Создать стрелку вверх">' + CONNECTOR_ICON + '</button>' +
+      '<button class="sel-ball" type="button" data-ball="e" title="Создать стрелку вправо">' + CONNECTOR_ICON + '</button>' +
+      '<button class="sel-ball" type="button" data-ball="s" title="Создать стрелку вниз">' + CONNECTOR_ICON + '</button>' +
+      '<button class="sel-ball" type="button" data-ball="w" title="Создать стрелку влево">' + CONNECTOR_ICON + '</button>';
     viewport.appendChild(selBox);
 
     // Слой линий выравнивания (smart guides) — фиксированный, поверх холста.
@@ -297,7 +309,7 @@ window.Board = (function () {
 
     if (node.type === 'arrow') {
       if (!local) { renderOrAdd(node); return; }
-      ['color', 'lineStyle', 'startCap', 'endCap', 'fromId', 'toId', 'x1', 'y1', 'x2', 'y2', 'shape', 'bend', 'startAnch', 'endAnch']
+      ['color', 'lineStyle', 'startCap', 'endCap', 'fromId', 'toId', 'x1', 'y1', 'x2', 'y2', 'shape', 'bend', 'c1', 'c2', 'manualPoints', 'startAnch', 'endAnch']
         .forEach(k => { if (node[k] !== undefined) local[k] = node[k]; });
       updateArrow(local);
       return;
@@ -332,15 +344,17 @@ window.Board = (function () {
       return;
     }
 
-    ['fontFamily', 'fontSize', 'color', 'align', 'fill', 'stroke', 'strokeStyle', 'strokeWidth', 'opacity'].forEach(k => {
+    ['fontFamily', 'fontSize', 'color', 'align', 'figure', 'fill', 'stroke', 'strokeStyle', 'strokeWidth', 'opacity'].forEach(k => {
       if (node[k] !== undefined) local[k] = node[k];
     });
     applyNodeTextStyle(el, local);
     applyNodeAppearance(el, local);
-    if (!editing) {
-      local.text = node.text;
-      el.innerHTML = sanitizeHtml(node.text || '');
+    if (!editing && node.type !== 'frame') {
+      local.text = (node.type === 'sticky' && node.text === 'Стикер') ? '' : node.text;
+      el.innerHTML = sanitizeHtml(local.text || '');
+      updateStickyPlaceholder(el, local);
     }
+    if (node.type === 'frame') ensureFigureShape(el, local.figure || 'rect');
     refreshArrows();
   }
 
@@ -356,6 +370,14 @@ window.Board = (function () {
     if (existed && existed.type !== 'arrow') cleanupArrowsFor(id);
   }
 
+  function updateStickyPlaceholder(el, node) {
+    if (!el || !node) return;
+    const empty = node.type === 'sticky' && !(node.text && node.text.trim());
+    el.classList.toggle('is-placeholder', empty);
+    if (empty) el.setAttribute('data-placeholder', 'Стикер');
+    else el.removeAttribute('data-placeholder');
+  }
+
   function renderNode(node) {
     const el = document.createElement('div');
     el.className = 'canvas-node canvas-node--' + node.type;
@@ -364,15 +386,20 @@ window.Board = (function () {
     el.style.top = node.y + 'px';
     applyNodeBox(el, node);
 
-    if (node.type === 'image') {
+    if (node.type === 'frame') {
+      ensureFigureShape(el, node.figure || 'rect');
+    } else if (node.type === 'image') {
       const img = document.createElement('img');
       img.src = node.src || '';
       img.alt = '';
       img.draggable = false;
       el.appendChild(img);
     } else {
+      // Старые стикеры с текстом «Стикер» считаем пустыми — это был плейсхолдер.
+      if (node.type === 'sticky' && node.text === 'Стикер') node.text = '';
       el.innerHTML = sanitizeHtml(node.text || '');
       applyNodeTextStyle(el, node);
+      updateStickyPlaceholder(el, node);
     }
     applyNodeAppearance(el, node);
     if (selectedIds.has(node.id)) el.classList.add('is-selected');
@@ -381,6 +408,7 @@ window.Board = (function () {
       el.contentEditable = 'true';
       el.addEventListener('input', () => {
         node.text = el.innerHTML;
+        updateStickyPlaceholder(el, node);
         scheduleTextSave(node.id);
         updateSelectionBox();     // элемент растёт вниз — тянем рамку и панель
         updateTextToolbar();
@@ -397,6 +425,7 @@ window.Board = (function () {
             const nodeEl = nodeEls.get(node.id);
             if (n) n.text = value;
             if (nodeEl) nodeEl.innerHTML = sanitizeHtml(value);
+            updateStickyPlaceholder(nodeEl, n);
             if (projectId) window.Store.updateNode(projectId, node.id, { text: value }).catch(handleError);
             updateSelectionBox();
             updateTextToolbar();
@@ -428,10 +457,77 @@ window.Board = (function () {
     return lum < 0.55 ? '#ffffff' : '#1a1a1a';
   }
 
+  const FIGURE_SIZES = {
+    rect: { w: 180, h: 180 },
+    rectangle: { w: 280, h: 160 },
+    ellipse: { w: 200, h: 140 },
+    diamond: { w: 170, h: 170 },
+    triangle: { w: 180, h: 160 },
+    'triangle-down': { w: 180, h: 160 },
+    circle: { w: 170, h: 170 }
+  };
+
+  function figureShapeDef(figure) {
+    switch (figure) {
+      case 'rectangle': return { tag: 'rect', attrs: { x: 2, y: 2, width: 96, height: 96, rx: 1 } };
+      case 'ellipse': return { tag: 'ellipse', attrs: { cx: 50, cy: 50, rx: 48, ry: 34 } };
+      case 'circle': return { tag: 'circle', attrs: { cx: 50, cy: 50, r: 47 } };
+      case 'diamond': return { tag: 'polygon', attrs: { points: '50,2 98,50 50,98 2,50' } };
+      case 'triangle': return { tag: 'polygon', attrs: { points: '50,2 98,98 2,98' } };
+      case 'triangle-down': return { tag: 'polygon', attrs: { points: '2,2 98,2 50,98' } };
+      default: return { tag: 'rect', attrs: { x: 2, y: 2, width: 96, height: 96, rx: 1 } };
+    }
+  }
+
+  function ensureFigureShape(el, figure) {
+    let svg = el.querySelector('.figure-svg');
+    if (!svg) {
+      svg = svgEl('svg', {
+        class: 'figure-svg', viewBox: '0 0 100 100', preserveAspectRatio: 'none'
+      });
+      el.appendChild(svg);
+    }
+    // Прямоугольники тянутся по боксу, остальные фигуры сохраняют пропорции
+    // и не превращаются в растянутые «блинчики».
+    svg.setAttribute('preserveAspectRatio',
+      (figure === 'rect' || figure === 'rectangle') ? 'none' : 'xMidYMid meet');
+    const def = figureShapeDef(figure);
+    let shape = svg.querySelector('.figure-shape');
+    if (!shape || shape.tagName.toLowerCase() !== def.tag) {
+      if (shape) shape.remove();
+      shape = svgEl(def.tag, { class: 'figure-shape', 'vector-effect': 'non-scaling-stroke' });
+      svg.appendChild(shape);
+    }
+    Object.keys(def.attrs).forEach(k => shape.setAttribute(k, def.attrs[k]));
+    return shape;
+  }
+
   // Заливка/обводка/прозрачность стикера и фигуры (frame).
   function applyNodeAppearance(el, node) {
     if (!el || !node) return;
     if (node.type !== 'sticky' && node.type !== 'frame') return;
+
+    if (node.type === 'frame') {
+      const shape = ensureFigureShape(el, node.figure || 'rect');
+      // Стандартный вид фигуры: белая заливка и сплошная тёмная обводка.
+      // Важно: стили задаём именно inline, иначе CSS-правило .figure-shape
+      // перекрывает SVG-атрибуты и изменения не видны.
+      shape.style.fill = node.fill || '#ffffff';
+      const style = node.strokeStyle || 'solid';
+      if (style === 'none') {
+        shape.style.stroke = 'none';
+        shape.style.strokeWidth = '0';
+        shape.style.strokeDasharray = 'none';
+      } else {
+        shape.style.stroke = node.stroke || '#1a1a1a';
+        shape.style.strokeWidth = (Number(node.strokeWidth) || 2) + 'px';
+        shape.style.strokeDasharray = style === 'dashed' ? '6 4' : 'none';
+      }
+      el.style.background = '';
+      el.style.border = 'none';
+      el.style.opacity = node.opacity != null ? String(node.opacity) : '';
+      return;
+    }
 
     if (node.fill) {
       el.style.background = node.fill;
@@ -596,14 +692,14 @@ window.Board = (function () {
     if (projectId) window.Store.removeNode(projectId, id).catch(handleError);
   }
 
-  function addNode(type, x, y) {
+  function addNode(type, x, y, opts) {
     const user = window.currentUser;
     const node = {
       id: window.Store.uid(),
       type,
       x: Math.round(x),
       y: Math.round(y),
-      text: type === 'frame' ? '' : (type === 'text' ? 'Текст' : 'Стикер'),
+      text: type === 'text' ? 'Текст' : '',
       createdBy: user ? user.uid : 'anon'
     };
     if (type === 'text' || type === 'sticky') {
@@ -611,11 +707,18 @@ window.Board = (function () {
       if (boardDefaults.fontSize) node.fontSize = boardDefaults.fontSize;
     }
     if (type === 'frame') {
-      // Значения совпадают с CSS-умолчанием, чтобы панель не врала.
-      node.strokeStyle = 'dashed';
+      node.figure = (opts && opts.figure) || activeFigure;
+      // Стандартный стиль: белая заливка, сплошная тёмная обводка.
+      node.fill = '#ffffff';
+      node.stroke = '#1a1a1a';
+      node.strokeStyle = 'solid';
       node.strokeWidth = 2;
+      const size = FIGURE_SIZES[node.figure] || FIGURE_SIZES.rect;
+      node.w = size.w;
+      node.h = size.h;
     }
-    const focus = type !== 'frame';
+    // У стикера «Стикер» — только плейсхолдер, фокус и выделение не нужны.
+    const focus = type === 'text';
     placeNode(node, focus);
     pushHistory({
       undo: () => removeLocalAndRemote(node.id),
@@ -763,6 +866,30 @@ window.Board = (function () {
   }
 
   // Рамка вокруг выделения (одиночного или группы) с ручками.
+  // Мировые границы узла: для стрелок берём концы и ручки изгиба.
+  function worldBoundsOf(n) {
+    if (!n) return null;
+    if (n.type === 'arrow') {
+      const ep = arrowEndpoints(n);
+      const geo = arrowGeometry(n);
+      let minX = Math.min(ep.x1, ep.x2), minY = Math.min(ep.y1, ep.y2);
+      let maxX = Math.max(ep.x1, ep.x2), maxY = Math.max(ep.y1, ep.y2);
+      (geo.handles || []).forEach(h => {
+        minX = Math.min(minX, h.x); minY = Math.min(minY, h.y);
+        maxX = Math.max(maxX, h.x); maxY = Math.max(maxY, h.y);
+      });
+      const m = 8;
+      return { x: minX - m, y: minY - m, x2: maxX + m, y2: maxY + m };
+    }
+    const el = nodeEls.get(n.id);
+    if (!el) return null;
+    return {
+      x: n.x, y: n.y,
+      x2: n.x + (el.offsetWidth || 0),
+      y2: n.y + (el.offsetHeight || 0)
+    };
+  }
+
   function updateSelectionBox() {
     if (!selBox) return;
     if (selectedIds.size === 0) { selBox.classList.add('hidden'); return; }
@@ -773,13 +900,12 @@ window.Board = (function () {
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     selectedIds.forEach(id => {
-      const n = nodes.get(id);
-      const el = nodeEls.get(id);
-      if (!n || !el) return;
-      minX = Math.min(minX, n.x);
-      minY = Math.min(minY, n.y);
-      maxX = Math.max(maxX, n.x + (el.offsetWidth || 0));
-      maxY = Math.max(maxY, n.y + (el.offsetHeight || 0));
+      const b = worldBoundsOf(nodes.get(id));
+      if (!b) return;
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x2);
+      maxY = Math.max(maxY, b.y2);
     });
     if (!isFinite(minX)) { selBox.classList.add('hidden'); return; }
 
@@ -858,6 +984,64 @@ window.Board = (function () {
     return { x: cl(p.x, rect.x, rect.x + rect.w), y: rect.y + rect.h };
   }
 
+  // Ближайшая сторона прямоугольника ('n'/'e'/'s'/'w') и якорь по её середине.
+  function sideOf(rect, p) {
+    const l = Math.abs(p.x - rect.x);
+    const r = Math.abs(rect.x + rect.w - p.x);
+    const t = Math.abs(p.y - rect.y);
+    const b = Math.abs(rect.y + rect.h - p.y);
+    const m = Math.min(l, r, t, b);
+    if (m === l) return 'w';
+    if (m === r) return 'e';
+    if (m === t) return 'n';
+    return 's';
+  }
+
+  function sideAnchor(rect, p) {
+    const side = sideOf(rect, p);
+    if (side === 'w') return { ux: -rect.w / 2, uy: 0 };
+    if (side === 'e') return { ux: rect.w / 2, uy: 0 };
+    if (side === 'n') return { ux: 0, uy: -rect.h / 2 };
+    return { ux: 0, uy: rect.h / 2 };
+  }
+
+  // Сторона, обращённая к точке p (по направлению из центра, а не по
+  // расстоянию до грани — иначе цель по правую руку выбирала бы верх).
+  function facingSide(rect, p) {
+    const cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+    const dx = p.x - cx, dy = p.y - cy;
+    if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'e' : 'w';
+    return dy >= 0 ? 's' : 'n';
+  }
+
+  // Точка на стенке, обращённой к p. Стенка выбирается направлением, а
+  // положение на ней — проекцией p, поэтому стрелка цепляется к любому месту
+  // грани, а не только к её середине.
+  function sidePoint(rect, p, wallHint) {
+    const side = wallHint || facingSide(rect, p);
+    const x0 = rect.x, x1 = rect.x + rect.w;
+    const y0 = rect.y, y1 = rect.y + rect.h;
+    const cl = (v, a, b) => Math.max(a, Math.min(v, b));
+    if (side === 'w') return { x: x0, y: cl(p.y, y0, y1) };
+    if (side === 'e') return { x: x1, y: cl(p.y, y0, y1) };
+    if (side === 'n') return { x: cl(p.x, x0, x1), y: y0 };
+    return { x: cl(p.x, x0, x1), y: y1 };
+  }
+
+  function outwardOffset(rect, p, amount) {
+    const side = sideOf(rect, p);
+    if (side === 'w') return { x: -amount, y: 0 };
+    if (side === 'e') return { x: amount, y: 0 };
+    if (side === 'n') return { x: 0, y: -amount };
+    return { x: 0, y: amount };
+  }
+
+  function borderNormal(rect, p) {
+    const o = outwardOffset(rect, p, 1);
+    const len = Math.hypot(o.x, o.y) || 1;
+    return { x: o.x / len, y: o.y / len };
+  }
+
   // Магнит при рисовании стрелки: ищем ближайший элемент в радиусе radiusPx
   // и притягиваем конец к его границе.
   function findSnapTarget(clientX, clientY, excludeId, radiusPx) {
@@ -893,11 +1077,48 @@ window.Board = (function () {
     const cb = rt ? { x: rt.x + rt.w / 2, y: rt.y + rt.h / 2 } : null;
     const freeA = { x: node.x1 || 0, y: node.y1 || 0 };
     const freeB = { x: node.x2 || 0, y: node.y2 || 0 };
-    const rawA = rf ? anchorTarget(node, 'start', rf, cb || freeB) : freeA;
-    const rawB = rt ? anchorTarget(node, 'end', rt, ca || freeA) : freeB;
+    // Прямая стрелка магнитится обеими концами к сторонам, обращённым друг
+    // к другу. Если один объект переместить, сторона перевыбирается сама —
+    // линия не будет проходить сквозь объекты. Гибкие сохраняют ручной якорь.
+    const shape = node.shape || 'straight';
+    const storedA = rf ? anchorTarget(node, 'start', rf, cb || freeB) : null;
+    const storedB = rt ? anchorTarget(node, 'end', rt, ca || freeA) : null;
+    // anchorTarget уже возвращает абсолютную точку на грани.
+    const storedAPoint = storedA;
+    const storedBPoint = storedB;
+    // Начало стрелки остаётся там, где его поставил пользователь.
+    const rawA = rf ? storedA : freeA;
+    // Конец магнитится к той стенке/зоне, куда его притащил пользователь.
+    const rawB = rt ? storedB : freeB;
     const a = rf ? borderPoint(rf, rawA) : rawA;
     const b = rt ? borderPoint(rt, rawB) : rawB;
     return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+  }
+
+  // Маркеры поворачиваются по касательной самой линии (для всех форм),
+  // поэтому при перемещении объекта курсор следует за изгибом стрелки.
+  function arrowCapAngles(node, geo, e) {
+    return { start: geo.startAngle + Math.PI, end: geo.endAngle };
+  }
+
+  // Управляющие точки дуги: направление линии плюс внешняя нормаль,
+  // чтобы кривая огибала объекты и её касательная следовала за линией.
+  function curveControls(a, b, rf, rt, k) {
+    const travel = unit(a, b);
+    const na = rf ? borderNormal(rf, a) : { x: -travel.x, y: -travel.y };
+    const nb = rt ? borderNormal(rt, b) : { x: -travel.x, y: -travel.y };
+    const mix = (p, q) => {
+      const v = { x: p.x * 0.6 + q.x * 0.4, y: p.y * 0.6 + q.y * 0.4 };
+      const len = Math.hypot(v.x, v.y) || 1;
+      return { x: v.x / len, y: v.y / len };
+    };
+    const d1 = mix(travel, na);
+    const d2 = mix(travel, { x: -nb.x, y: -nb.y });
+    return {
+      c1: { x: a.x + d1.x * k, y: a.y + d1.y * k },
+      c2: { x: b.x - d2.x * k, y: b.y - d2.y * k },
+      d1, d2
+    };
   }
 
   function svgEl(name, attrs) {
@@ -968,24 +1189,58 @@ window.Board = (function () {
     const rt = node.toId ? rectOf(node.toId) : null;
 
     if (shape === 'curved') {
-      let c1, c2, ang;
-      if (Math.abs(dx) >= Math.abs(dy)) {
-        c1 = { x: ax + dx * 0.5, y: ay };
-        c2 = { x: bx - dx * 0.5, y: by };
-        ang = dx >= 0 ? 0 : Math.PI;
-      } else {
-        c1 = { x: ax, y: ay + dy * 0.5 };
-        c2 = { x: bx, y: by - dy * 0.5 };
-        ang = dy >= 0 ? Math.PI / 2 : -Math.PI / 2;
-      }
+      const dist = Math.hypot(dx, dy);
+      const k = Math.max(40, Math.min(180, dist * 0.35));
+      const ctrl = curveControls({ x: ax, y: ay }, { x: bx, y: by }, rf, rt, k);
+      const startAngle = Math.atan2(ctrl.c1.y - ay, ctrl.c1.x - ax);
+      const endAngle = Math.atan2(by - ctrl.c2.y, bx - ctrl.c2.x);
       return {
-        path: 'M ' + ax + ' ' + ay + ' C ' + c1.x + ' ' + c1.y + ' ' + c2.x + ' ' + c2.y + ' ' + bx + ' ' + by,
-        startAngle: ang, endAngle: ang,
+        path: 'M ' + ax + ' ' + ay + ' C ' + ctrl.c1.x + ' ' + ctrl.c1.y + ' ' +
+          ctrl.c2.x + ' ' + ctrl.c2.y + ' ' + bx + ' ' + by,
+        startAngle, endAngle,
         handles: [
           { kind: 'start', x: ax, y: ay, axis: 'xy' },
           { kind: 'end', x: bx, y: by, axis: 'xy' }
         ]
       };
+    }
+
+    if (shape === 'curved-manual') {
+      // Точки лежат на самой кривой: сплайн Catmull–Rom проходит через них.
+      const a = { x: ax, y: ay }, b = { x: bx, y: by };
+      let mid = [];
+      if (Array.isArray(node.manualPoints) && node.manualPoints.length) {
+        mid = node.manualPoints
+          .filter(p => p && isFinite(p.x) && isFinite(p.y))
+          .map(p => ({ x: p.x, y: p.y }));
+      } else if (node.c1 || node.c2) {
+        if (node.c1) mid.push({ x: node.c1.x, y: node.c1.y });
+        if (node.c2) mid.push({ x: node.c2.x, y: node.c2.y });
+      } else {
+        const dist = Math.hypot(dx, dy);
+        const k = Math.max(40, Math.min(180, dist * 0.35));
+        const ctrl = curveControls(a, b, rf, rt, k);
+        mid = [ctrl.c1, ctrl.c2];
+      }
+      const all = [a].concat(mid, [b]);
+      const segs = [];
+      let d = 'M ' + all[0].x + ' ' + all[0].y;
+      for (let i = 0; i < all.length - 1; i++) {
+        const p0 = all[i - 1] || all[i];
+        const p1 = all[i], p2 = all[i + 1];
+        const p3 = all[i + 2] || all[i + 1];
+        const c1 = { x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 };
+        const c2 = { x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 };
+        d += ' C ' + c1.x + ' ' + c1.y + ' ' + c2.x + ' ' + c2.y + ' ' + p2.x + ' ' + p2.y;
+        segs.push({ p0, p1, c1, c2 });
+      }
+      const first = segs[0], last = segs[segs.length - 1];
+      const startAngle = Math.atan2(first.c1.y - a.y, first.c1.x - a.x);
+      const endAngle = Math.atan2(b.y - last.c2.y, b.x - last.c2.x);
+      const handles = [{ kind: 'start', x: a.x, y: a.y, axis: 'xy' }];
+      mid.forEach((p, i) => handles.push({ kind: 'point', index: i, x: p.x, y: p.y, axis: 'xy' }));
+      handles.push({ kind: 'end', x: b.x, y: b.y, axis: 'xy' });
+      return { path: d, startAngle, endAngle, handles, segments: segs };
     }
 
     if (shape === 'elbow') {
@@ -1006,11 +1261,32 @@ window.Board = (function () {
         else if (oA === 'v' || oB === 'v') horiz = false;
         else horiz = Math.abs(dx) >= Math.abs(dy);
         if (horiz) {
-          const midX = (ax + bx) / 2 + bend;
+          let midX = (ax + bx) / 2 + bend;
+          // Ломаная огибает объект, если конец прикреплён к вертикальной грани.
+          if (rt && oB === 'h') {
+            const side = sideOf(rt, { x: bx, y: by });
+            if (side === 'w') midX = Math.min(midX, rt.x - 32);
+            if (side === 'e') midX = Math.max(midX, rt.x + rt.w + 32);
+          }
+          if (rf && oA === 'h') {
+            const side = sideOf(rf, { x: ax, y: ay });
+            if (side === 'w') midX = Math.min(midX, rf.x - 32);
+            if (side === 'e') midX = Math.max(midX, rf.x + rf.w + 32);
+          }
           pts = [{ x: ax, y: ay }, { x: midX, y: ay }, { x: midX, y: by }, { x: bx, y: by }];
           hMid = { kind: 'bend', x: midX, y: (ay + by) / 2, axis: 'x' };
         } else {
-          const midY = (ay + by) / 2 + bend;
+          let midY = (ay + by) / 2 + bend;
+          if (rt && oB === 'v') {
+            const side = sideOf(rt, { x: bx, y: by });
+            if (side === 'n') midY = Math.min(midY, rt.y - 32);
+            if (side === 's') midY = Math.max(midY, rt.y + rt.h + 32);
+          }
+          if (rf && oA === 'v') {
+            const side = sideOf(rf, { x: ax, y: ay });
+            if (side === 'n') midY = Math.min(midY, rf.y - 32);
+            if (side === 's') midY = Math.max(midY, rf.y + rf.h + 32);
+          }
           pts = [{ x: ax, y: ay }, { x: ax, y: midY }, { x: bx, y: midY }, { x: bx, y: by }];
           hMid = { kind: 'bend', x: (ax + bx) / 2, y: midY, axis: 'y' };
         }
@@ -1043,9 +1319,21 @@ window.Board = (function () {
     g.appendChild(svgEl('path', { class: 'arrow__line' }));
     g.appendChild(svgEl('path', { class: 'arrow__hit' }));
     g.appendChild(svgEl('g', { class: 'arrow__caps' }));
-    ['start', 'bend', 'end'].forEach(kind => {
-      g.appendChild(svgEl('circle', { class: 'arrow__handle', 'data-kind': kind, r: 6 }));
-    });
+    const addHandle = (kind, index) => {
+      const h = svgEl('g', { class: 'arrow__handle', 'data-kind': kind });
+      if (index != null) h.setAttribute('data-index', String(index));
+      h.appendChild(svgEl('circle', { class: 'arrow__hitarea', r: 9 }));
+      // Все маркеры — обычные точки, а не мини-стрелочки.
+      h.appendChild(svgEl('circle', {
+        class: 'arrow__dot',
+        r: (kind === 'start' || kind === 'end') ? 4.5 : 3.5
+      }));
+      g.appendChild(h);
+    };
+    addHandle('start');
+    addHandle('bend');
+    for (let i = 0; i < 12; i++) addHandle('point', i);
+    addHandle('end');
     arrowLayer.appendChild(g);
     arrowEls.set(node.id, g);
     updateArrow(node);
@@ -1069,17 +1357,24 @@ window.Board = (function () {
     const caps = g.querySelector('.arrow__caps');
     while (caps.firstChild) caps.removeChild(caps.firstChild);
     const e = arrowEndpoints(node);
-    addCap(caps, e.x1, e.y1, geo.startAngle + Math.PI, node.startCap || 'none', color);
-    addCap(caps, e.x2, e.y2, geo.endAngle, node.endCap || 'arrow', color);
+    const capAngles = arrowCapAngles(node, geo, e);
+    addCap(caps, e.x1, e.y1, capAngles.start, node.startCap || 'none', color);
+    addCap(caps, e.x2, e.y2, capAngles.end, node.endCap || 'arrow', color);
 
     const handles = geo.handles || [];
-    ['start', 'bend', 'end'].forEach(kind => {
-      const el = g.querySelector('.arrow__handle[data-kind="' + kind + '"]');
+    const selectors = [{ kind: 'start' }, { kind: 'bend' }];
+    for (let i = 0; i < 12; i++) selectors.push({ kind: 'point', index: i });
+    selectors.push({ kind: 'end' });
+    selectors.forEach(sel => {
+      const el = g.querySelector('.arrow__handle[data-kind="' + sel.kind + '"]' +
+        (sel.index != null ? '[data-index="' + sel.index + '"]' : ''));
       if (!el) return;
-      const h = handles.find(x => x.kind === kind);
+      const h = handles.find(x => x.kind === sel.kind &&
+        (sel.index == null || x.index === sel.index));
       if (h) {
-        el.setAttribute('cx', h.x);
-        el.setAttribute('cy', h.y);
+        const angle = sel.kind === 'start' ? capAngles.start : sel.kind === 'end' ? capAngles.end : 0;
+        el.setAttribute('transform',
+          'translate(' + h.x + ' ' + h.y + ') rotate(' + angle * 180 / Math.PI + ')');
         el.setAttribute('data-axis', h.axis);
         el.style.display = '';
       } else {
@@ -1102,6 +1397,7 @@ window.Board = (function () {
   function setArrowStyle(id, patch, live) {
     const n = nodes.get(id);
     if (!n || n.type !== 'arrow') return;
+    if (patch.shape) setActiveArrowShape(patch.shape);
     const before = {};
     Object.keys(patch).forEach(k => { before[k] = n[k]; });
     Object.assign(n, patch);
@@ -1132,7 +1428,8 @@ window.Board = (function () {
       y: Math.round(freeY || 0),
       fromId: fromId || null,
       toId: toId || null,
-      x1: 0, y1: 0,
+      x1: opts.start ? Math.round(opts.start.x) : 0,
+      y1: opts.start ? Math.round(opts.start.y) : 0,
       x2: Math.round(freeX || 0),
       y2: Math.round(freeY || 0),
       color: ARROW_DEFAULT_COLOR,
@@ -1163,7 +1460,8 @@ window.Board = (function () {
       'stroke-linecap': 'round', 'pointer-events': 'none'
     });
     if (arrowLayer) arrowLayer.appendChild(preview);
-    arrowDraw = { fromId, start, cursor: start, preview, snap: null, hiEl: null };
+    // Свободная стрелка (начало в пустом месте) не должна зависеть от фигур.
+    arrowDraw = { fromId, free: !fromId, start, cursor: start, preview, snap: null, hiEl: null };
     viewport.style.cursor = 'crosshair';
   }
 
@@ -1172,7 +1470,7 @@ window.Board = (function () {
     const p = screenToWorld(e.clientX, e.clientY);
     const a = arrowDraw.start;
 
-    const snap = findSnapTarget(e.clientX, e.clientY, arrowDraw.fromId);
+    const snap = arrowDraw.free ? null : findSnapTarget(e.clientX, e.clientY, arrowDraw.fromId);
     if (arrowDraw.hiEl && (!snap || arrowDraw.hiEl !== nodeEls.get(snap.id))) {
       arrowDraw.hiEl.classList.remove('arrow-target');
       arrowDraw.hiEl = null;
@@ -1192,7 +1490,7 @@ window.Board = (function () {
   }
 
   // Перетаскивание ручек стрелки: изгиб (bend) и якоря начала/конца.
-  function startArrowDrag(e, id, kind, axis) {
+  function startArrowDrag(e, id, kind, axis, index) {
     const n = nodes.get(id);
     if (!n) return;
     e.preventDefault();
@@ -1200,14 +1498,43 @@ window.Board = (function () {
     const ep = arrowEndpoints(n);
     arrowDrag = {
       id, kind, axis: axis || 'xy',
+      index: index != null ? Number(index) : null,
       startX: e.clientX, startY: e.clientY,
       base: { bend: n.bend || 0, x1: n.x1 || 0, y1: n.y1 || 0, x2: n.x2 || 0, y2: n.y2 || 0 },
+      baseFromId: n.fromId || null,
+      baseToId: n.toId || null,
       baseStartAnch: n.startAnch ? { ux: n.startAnch.ux, uy: n.startAnch.uy } : null,
       baseEndAnch: n.endAnch ? { ux: n.endAnch.ux, uy: n.endAnch.uy } : null,
+      baseC1: null,
+      baseC2: null,
+      basePoint: null,
+      baseManualPoints: Array.isArray(n.manualPoints)
+        ? n.manualPoints.map(p => ({ x: p.x, y: p.y })) : null,
       epStart: { x: ep.x1, y: ep.y1 },
-      epEnd: { x: ep.x2, y: ep.y2 }
+      epEnd: { x: ep.x2, y: ep.y2 },
+      hiEl: null
     };
+    // Если ручная точка ещё не сохранена — берём её текущее вычисленное
+    // положение, иначе первый drag прыгнет в ноль.
+    const geo = arrowGeometry(n);
+    const hp = (geo.handles || []).find(h => h.kind === 'point' && h.index === arrowDrag.index);
+    if (arrowDrag.kind === 'point' && !arrowDrag.basePoint && hp) {
+      arrowDrag.basePoint = { x: hp.x, y: hp.y };
+    }
     viewport.style.cursor = axis === 'y' ? 'ns-resize' : axis === 'x' ? 'ew-resize' : 'move';
+  }
+
+  // Та же подсветка цели, что и при рисовании новой стрелки.
+  function setArrowTargetHighlight(state, snap) {
+    const el = snap ? nodeEls.get(snap.id) : null;
+    if (state.hiEl && state.hiEl !== el) {
+      state.hiEl.classList.remove('arrow-target');
+      state.hiEl = null;
+    }
+    if (el) {
+      state.hiEl = el;
+      el.classList.add('arrow-target');
+    }
   }
 
   function applyEndpointDrag(n, which, r, mx, my) {
@@ -1218,6 +1545,10 @@ window.Board = (function () {
       const rect = rectOf(which === 'start' ? n.fromId : n.toId);
       if (!rect) return;
       const cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+      // Прямая: стенка навстречу другому концу, позиция на ней — по курсору.
+      // Гибные продолжают скользить по границе (огибают объект).
+      // Конец следует за курсором по границе объекта — магнетизм без
+      // авто-подмены стенки.
       const dir = { ux: px - cx, uy: py - cy };
       if (which === 'start') n.startAnch = dir; else n.endAnch = dir;
     } else if (which === 'start') {
@@ -1235,12 +1566,49 @@ window.Board = (function () {
     if (!n) return;
     const dx = (e.clientX - r.startX) / view.scale;
     const dy = (e.clientY - r.startY) / view.scale;
-    if (r.kind === 'bend') {
+    if (r.kind === 'point' && r.basePoint) {
+      const pts = Array.isArray(n.manualPoints) ? n.manualPoints.slice() : [];
+      const base = r.basePoint;
+      pts[r.index] = { x: Math.round(base.x + dx), y: Math.round(base.y + dy) };
+      n.manualPoints = pts;
+    } else if (r.kind === 'bend') {
       n.bend = Math.round((r.base.bend || 0) + (r.axis === 'y' ? dy : dx));
     } else {
-      const mx = r.axis === 'y' ? 0 : dx;
-      const my = r.axis === 'x' ? 0 : dy;
-      applyEndpointDrag(n, r.kind, r, mx, my);
+      // При перетаскивании конца ищем объект под курсором: можно перекинуть
+      // стрелку на другой объект или перевести её на другую сторону того же.
+      const exclude = r.kind === 'start' ? n.toId : n.fromId;
+      const snap = findSnapTarget(e.clientX, e.clientY, exclude);
+      setArrowTargetHighlight(r, snap);
+      if (snap) {
+        const rect = snap.rect;
+        const cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+        const anch = { ux: snap.point.x - cx, uy: snap.point.y - cy };
+        if (r.kind === 'start') {
+          n.fromId = snap.id;
+          n.startAnch = anch;
+          n.x1 = Math.round(snap.point.x);
+          n.y1 = Math.round(snap.point.y);
+        } else {
+          n.toId = snap.id;
+          n.endAnch = anch;
+          n.x2 = Math.round(snap.point.x);
+          n.y2 = Math.round(snap.point.y);
+        }
+      } else {
+        const mx = r.axis === 'y' ? 0 : dx;
+        const my = r.axis === 'x' ? 0 : dy;
+        if (r.kind === 'start' || r.kind === 'end') {
+          // Утащили конец с объекта на пустое место — открепляем его.
+          const isStart = r.kind === 'start';
+          const ep = isStart ? r.epStart : r.epEnd;
+          n[isStart ? 'fromId' : 'toId'] = null;
+          n[isStart ? 'startAnch' : 'endAnch'] = null;
+          n[isStart ? 'x1' : 'x2'] = Math.round(ep.x + mx);
+          n[isStart ? 'y1' : 'y2'] = Math.round(ep.y + my);
+        } else {
+          applyEndpointDrag(n, r.kind, r, mx, my);
+        }
+      }
     }
     updateArrow(n);
   }
@@ -1249,16 +1617,25 @@ window.Board = (function () {
     if (!arrowDrag) return;
     const r = arrowDrag;
     arrowDrag = null;
+    if (r.hiEl) r.hiEl.classList.remove('arrow-target');
     viewport.style.cursor = '';
     const n = nodes.get(r.id);
     if (!n) return;
     const before = {
       bend: r.base.bend, x1: r.base.x1, y1: r.base.y1, x2: r.base.x2, y2: r.base.y2,
-      startAnch: r.baseStartAnch, endAnch: r.baseEndAnch
+      fromId: r.baseFromId, toId: r.baseToId,
+      startAnch: r.baseStartAnch, endAnch: r.baseEndAnch,
+      c1: r.baseC1, c2: r.baseC2,
+      manualPoints: r.baseManualPoints || null
     };
     const after = {
       bend: n.bend || 0, x1: n.x1 || 0, y1: n.y1 || 0, x2: n.x2 || 0, y2: n.y2 || 0,
-      startAnch: n.startAnch || null, endAnch: n.endAnch || null
+      fromId: n.fromId || null, toId: n.toId || null,
+      startAnch: n.startAnch || null, endAnch: n.endAnch || null,
+      c1: n.c1 ? { x: n.c1.x, y: n.c1.y } : null,
+      c2: n.c2 ? { x: n.c2.x, y: n.c2.y } : null,
+      manualPoints: Array.isArray(n.manualPoints)
+        ? n.manualPoints.map(p => ({ x: p.x, y: p.y })) : null
     };
     if (JSON.stringify(before) === JSON.stringify(after)) return;
     if (projectId) window.Store.updateNode(projectId, r.id, after).catch(handleError);
@@ -1275,13 +1652,67 @@ window.Board = (function () {
     });
   }
 
+  function cubicPoint(s, t) {
+    const u = 1 - t;
+    return {
+      x: u * u * u * s.p0.x + 3 * u * u * t * s.c1.x + 3 * u * t * t * s.c2.x + t * t * t * s.p1.x,
+      y: u * u * u * s.p0.y + 3 * u * u * t * s.c1.y + 3 * u * t * t * s.c2.y + t * t * t * s.p1.y
+    };
+  }
+
+  // Добавить новую точку на кривой в месте, ближайшем к курсору.
+  function addArrowPoint(id, clientX, clientY) {
+    const n = nodes.get(id);
+    if (!n || n.shape !== 'curved-manual') return;
+    const p = screenToWorld(clientX, clientY);
+    const geo = arrowGeometry(n);
+    const segs = geo.segments || [];
+    let best = null;
+    segs.forEach((s, si) => {
+      for (let k = 1; k < 24; k++) {
+        const q = cubicPoint(s, k / 24);
+        const d = Math.hypot(q.x - p.x, q.y - p.y);
+        if (!best || d < best.d) best = { x: q.x, y: q.y, si, d };
+      }
+    });
+    if (!best) return;
+
+    const before = Array.isArray(n.manualPoints)
+      ? n.manualPoints.map(q => ({ x: q.x, y: q.y })) : null;
+    const pts = before ? before.slice() : [];
+    if (!before) {
+      (geo.handles || []).forEach(h => {
+        if (h.kind === 'point') pts[h.index] = { x: h.x, y: h.y };
+      });
+      for (let i = pts.length - 1; i >= 0; i--) if (!pts[i]) pts.splice(i, 1);
+    }
+    pts.splice(Math.min(best.si, pts.length), 0, {
+      x: Math.round(best.x), y: Math.round(best.y)
+    });
+
+    n.manualPoints = pts;
+    const after = pts.map(q => ({ x: q.x, y: q.y }));
+    updateArrow(n);
+    if (projectId) window.Store.updateNode(projectId, id, { manualPoints: after }).catch(handleError);
+    const apply = values => {
+      const nn = nodes.get(id);
+      if (!nn) return;
+      nn.manualPoints = values ? values.map(q => ({ x: q.x, y: q.y })) : null;
+      updateArrow(nn);
+      if (projectId) window.Store.updateNode(projectId, id, { manualPoints: nn.manualPoints }).catch(() => {});
+    };
+    pushHistory({ undo: () => apply(before), redo: () => apply(after) });
+  }
+
   function finishArrowDraw(e) {
     if (!arrowDraw) return;
     const fromId = arrowDraw.fromId;
+    const free = arrowDraw.free;
     const startPt = arrowDraw.start;
     const p = screenToWorld(e.clientX, e.clientY);
-    const recomputed = findSnapTarget(e.clientX, e.clientY, fromId);
-    let snap = recomputed || arrowDraw.snap;
+    // Свободная стрелка не ищет фигуры ни в начале, ни в конце.
+    const recomputed = free ? null : findSnapTarget(e.clientX, e.clientY, fromId);
+    let snap = free ? null : (recomputed || arrowDraw.snap);
     if (arrowDraw.hiEl) arrowDraw.hiEl.classList.remove('arrow-target');
     if (arrowDraw.preview) arrowDraw.preview.remove();
     arrowDraw = null;
@@ -1292,13 +1723,20 @@ window.Board = (function () {
     // Слишком короткая стрелка — игнорируем (случайный клик по шарику).
     if (Math.hypot(rawEnd.x - a.x, rawEnd.y - a.y) < 12) return;
 
+    const shape = activeArrowShape ||
+      (window.Settings && window.Settings.arrowShape ? window.Settings.arrowShape() : 'straight');
+    const fromRect0 = rectOf(fromId);
+    const fromCenter = fromRect0
+      ? { x: fromRect0.x + fromRect0.w / 2, y: fromRect0.y + fromRect0.h / 2 }
+      : startPt;
     let toId = null;
     let endAnch = null;
     if (snap) {
       toId = snap.id;
       const rect = snap.rect;
-      endAnch = { ux: snap.point.x - (rect.x + rect.w / 2), uy: snap.point.y - (rect.y + rect.h / 2) };
-    } else {
+      const cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+      endAnch = { ux: snap.point.x - cx, uy: snap.point.y - cy };
+    } else if (!free) {
       const targetEl = document.elementFromPoint(e.clientX, e.clientY);
       const targetNodeEl = targetEl && targetEl.closest ? targetEl.closest('.canvas-node') : null;
       if (targetNodeEl) {
@@ -1311,10 +1749,14 @@ window.Board = (function () {
     let startAnch = null;
     const rf = rectOf(fromId);
     if (rf) {
-      startAnch = { ux: a.x - (rf.x + rf.w / 2), uy: a.y - (rf.y + rf.h / 2) };
+      const cx = rf.x + rf.w / 2, cy = rf.y + rf.h / 2;
+      // Стартова сторона фиксируется тем, откуда пользователь начал тянуть.
+      startAnch = { ux: a.x - cx, uy: a.y - cy };
     }
 
-    createArrow(fromId, toId, rawEnd.x, rawEnd.y, { endAnch, startAnch });
+    createArrow(fromId, toId, rawEnd.x, rawEnd.y, {
+      endAnch, startAnch, shape, start: startPt
+    });
     const newId = [...selectedIds][0];
     const created = nodes.get(newId) ? snapshot(nodes.get(newId)) : null;
     pushHistory({
@@ -1475,7 +1917,7 @@ window.Board = (function () {
   function snapshot(node) {
     return {
       id: node.id, type: node.type, x: node.x, y: node.y,
-      w: node.w, h: node.h,
+      w: node.w, h: node.h, figure: node.figure,
       text: node.text || '', src: node.src, createdBy: node.createdBy,
       fontFamily: node.fontFamily, fontSize: node.fontSize,
       color: node.color, align: node.align,
@@ -1485,6 +1927,9 @@ window.Board = (function () {
       x1: node.x1, y1: node.y1, x2: node.x2, y2: node.y2,
       lineStyle: node.lineStyle, startCap: node.startCap, endCap: node.endCap,
       shape: node.shape, bend: node.bend,
+      c1: node.c1, c2: node.c2,
+      manualPoints: node.manualPoints
+        ? node.manualPoints.map(p => ({ x: p.x, y: p.y })) : null,
       startAnch: node.startAnch, endAnch: node.endAnch
     };
   }
@@ -1628,13 +2073,12 @@ window.Board = (function () {
   function selectionBounds() {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     selectedIds.forEach(id => {
-      const n = nodes.get(id);
-      const el = nodeEls.get(id);
-      if (!n || !el || n.type === 'arrow') return;
-      minX = Math.min(minX, n.x);
-      minY = Math.min(minY, n.y);
-      maxX = Math.max(maxX, n.x + (el.offsetWidth || 0));
-      maxY = Math.max(maxY, n.y + (el.offsetHeight || 0));
+      const b = worldBoundsOf(nodes.get(id));
+      if (!b) return;
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x2);
+      maxY = Math.max(maxY, b.y2);
     });
     if (!isFinite(minX)) return null;
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
@@ -1958,6 +2402,14 @@ window.Board = (function () {
   function bindEvents() {
     viewport.addEventListener('wheel', onWheel, { passive: false });
     viewport.addEventListener('mousedown', onMouseDown);
+    viewport.addEventListener('dblclick', (e) => {
+      const hit = e.target.closest('.arrow__hit');
+      const g = hit && hit.closest('.arrow');
+      const id = g && g.dataset.id;
+      if (!id) return;
+      e.preventDefault();
+      addArrowPoint(id, e.clientX, e.clientY);
+    });
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('keydown', onKeyDown);
@@ -1975,9 +2427,53 @@ window.Board = (function () {
       e.preventDefault();
     });
 
+    arrowCursorEl = document.createElement('div');
+    arrowCursorEl.className = 'arrow-cursor hidden';
+    viewport.appendChild(arrowCursorEl);
+
+    figurePreview = document.createElement('div');
+    figurePreview.className = 'figure-preview hidden';
+    viewport.appendChild(figurePreview);
+    refreshFigurePreview();
+
     document.querySelectorAll('.tool').forEach(btn => {
-      btn.addEventListener('click', () => setTool(btn.dataset.tool));
+      btn.addEventListener('click', () => {
+        if (btn.id === 'btn-figure') { toggleFiguresPopover(); return; }
+        if (btn.id === 'btn-arrow') { toggleArrowsPopover(); return; }
+        setTool(btn.dataset.tool);
+      });
     });
+    document.querySelectorAll('.figure-btn[data-arrow-shape]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setActiveArrowShape(btn.dataset.arrowShape);
+        closeArrowsPopover();
+        setTool('arrow');
+      });
+    });
+    setActiveArrowShape(activeArrowShape);
+    document.querySelectorAll('.figure-btn[data-figure]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setActiveFigure(btn.dataset.figure);
+        closeFiguresPopover();
+        setTool('frame');
+      });
+    });
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.tool-figure')) {
+        closeFiguresPopover();
+        closeArrowsPopover();
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeFiguresPopover();
+        closeArrowsPopover();
+        if (activeTool === 'arrow') setTool('select');
+      }
+    });
+    setActiveFigure(activeFigure);
     document.getElementById('zoom-in').addEventListener('click', () => zoomAt(zoomStep()));
     document.getElementById('zoom-out').addEventListener('click', () => zoomAt(-zoomStep()));
     document.getElementById('zoom-reset').addEventListener('click', resetView);
@@ -2112,11 +2608,128 @@ window.Board = (function () {
     });
   }
 
+  function refreshFigurePreview() {
+    if (!figurePreview) return;
+    const size = FIGURE_SIZES[activeFigure] || FIGURE_SIZES.rect;
+    figurePreview.style.width = size.w + 'px';
+    figurePreview.style.height = size.h + 'px';
+    ensureFigureShape(figurePreview, activeFigure);
+    const shape = figurePreview.querySelector('.figure-shape');
+    if (!shape) return;
+    shape.style.fill = 'rgba(140, 148, 160, .28)';
+    shape.style.stroke = '#7b8494';
+    shape.style.strokeWidth = '2px';
+    shape.style.strokeDasharray = '6 4';
+  }
+
+  function setActiveFigure(figure) {
+    const btn = document.querySelector('.figure-btn[data-figure="' + figure + '"]');
+    if (!btn) return;
+    activeFigure = figure;
+    try { localStorage.setItem('miroz.figure', figure); } catch (e) { /* ignore */ }
+    document.querySelectorAll('.figure-btn[data-figure]').forEach(b =>
+      b.classList.toggle('is-active', b.dataset.figure === figure));
+    const icon = document.getElementById('figure-icon');
+    if (icon) icon.innerHTML = btn.querySelector('svg').outerHTML;
+    refreshFigurePreview();
+  }
+
+  function figuresPopover() { return document.getElementById('figures-popover'); }
+  function openFiguresPopover() {
+    const pop = figuresPopover();
+    if (pop) pop.classList.remove('hidden');
+  }
+  function closeFiguresPopover() {
+    const pop = figuresPopover();
+    if (pop) pop.classList.add('hidden');
+  }
+  function toggleFiguresPopover() {
+    const pop = figuresPopover();
+    if (!pop) return;
+    if (pop.classList.contains('hidden')) openFiguresPopover();
+    else closeFiguresPopover();
+  }
+
+  function setActiveArrowShape(shape) {
+    const btn = document.querySelector('.figure-btn[data-arrow-shape="' + shape + '"]');
+    if (!btn) return;
+    activeArrowShape = shape;
+    // Выбор формы в тулбаре одновременно меняет «начальную форму» в настройках.
+    if (window.Settings && window.Settings.setLocal) {
+      window.Settings.setLocal({ arrowShape: shape });
+    }
+    document.querySelectorAll('.figure-btn[data-arrow-shape]').forEach(b =>
+      b.classList.toggle('is-active', b.dataset.arrowShape === shape));
+    const icon = document.getElementById('arrow-icon');
+    if (icon) icon.innerHTML = btn.querySelector('svg').outerHTML;
+  }
+
+  function arrowsPopover() { return document.getElementById('arrows-popover'); }
+  function openArrowsPopover() {
+    const pop = arrowsPopover();
+    if (pop) pop.classList.remove('hidden');
+  }
+  function closeArrowsPopover() {
+    const pop = arrowsPopover();
+    if (pop) pop.classList.add('hidden');
+  }
+  function toggleArrowsPopover() {
+    const pop = arrowsPopover();
+    if (!pop) return;
+    if (pop.classList.contains('hidden')) openArrowsPopover();
+    else closeArrowsPopover();
+  }
+
+  function clearArrowCursor() {
+    if (arrowCursorHiEl) arrowCursorHiEl.classList.remove('arrow-target');
+    arrowCursorHiEl = null;
+    arrowCursorSnap = null;
+    if (arrowCursorEl) arrowCursorEl.classList.add('hidden');
+  }
+
+  // Точка на курсоре в режиме стрелки: прилипает к стенке объекта под мышкой.
+  function updateArrowCursor(e) {
+    if (activeTool !== 'arrow' || !arrowCursorEl) { clearArrowCursor(); return; }
+    const snap = findSnapTarget(e.clientX, e.clientY, null);
+    const el = snap ? nodeEls.get(snap.id) : null;
+    if (arrowCursorHiEl && arrowCursorHiEl !== el) {
+      arrowCursorHiEl.classList.remove('arrow-target');
+      arrowCursorHiEl = null;
+    }
+    if (el) {
+      arrowCursorHiEl = el;
+      el.classList.add('arrow-target');
+    }
+    arrowCursorSnap = snap;
+    const p = snap ? snap.point : screenToWorld(e.clientX, e.clientY);
+    const s = worldToScreen(p.x, p.y);
+    arrowCursorEl.style.left = s.x + 'px';
+    arrowCursorEl.style.top = s.y + 'px';
+    arrowCursorEl.classList.toggle('is-snapped', !!snap);
+    arrowCursorEl.classList.remove('hidden');
+  }
+
   function setTool(tool) {
+    if (tool !== 'arrow') clearArrowCursor();
     activeTool = tool;
     viewport.dataset.tool = tool;
     document.querySelectorAll('.tool').forEach(b =>
       b.classList.toggle('is-active', b.dataset.tool === tool));
+
+    // Серый призрак фигуры: курсор находится в её левом верхнем углу.
+    if (figurePreview) {
+      if (tool === 'frame') {
+        refreshFigurePreview();
+        if (lastCursorWorld) {
+          const p = worldToScreen(lastCursorWorld.x, lastCursorWorld.y);
+          figurePreview.style.left = p.x + 'px';
+          figurePreview.style.top = p.y + 'px';
+        }
+        figurePreview.classList.remove('hidden');
+      } else {
+        figurePreview.classList.add('hidden');
+      }
+    }
   }
 
   function onWheel(e) {
@@ -2175,7 +2788,8 @@ window.Board = (function () {
     if (aHandle && e.button === 0) {
       const ag = aHandle.closest('.arrow');
       if (ag && ag.dataset.id) {
-        startArrowDrag(e, ag.dataset.id, aHandle.getAttribute('data-kind'), aHandle.getAttribute('data-axis'));
+        startArrowDrag(e, ag.dataset.id, aHandle.getAttribute('data-kind'),
+          aHandle.getAttribute('data-axis'), aHandle.getAttribute('data-index'));
         return;
       }
     }
@@ -2185,11 +2799,53 @@ window.Board = (function () {
     if (e.button !== 0) return;
     if (spaceDown) { startPan(e); return; }
 
+    if (activeTool === 'arrow' && e.button === 0) {
+      // Точка уже примагничена к стенке (см. updateArrowCursor). От неё и
+      // начинаем тянуть стрелку обычным механизмом.
+      const snap = findSnapTarget(e.clientX, e.clientY, null);
+      const fromId = snap ? snap.id : null;
+      clearArrowCursor();
+      setTool('select');
+      startArrowDraw(e, fromId);
+      return;
+    }
+
     if (activeTool !== 'select') {
       const p = screenToWorld(e.clientX, e.clientY);
       if (activeTool === 'image') pickImageAt(p.x, p.y);
-      else addNode(activeTool, p.x, p.y);
+      else addNode(activeTool, p.x, p.y, { figure: activeFigure });
       setTool('select');
+      return;
+    }
+
+    // Ручные режимы: линию можно схватить в любом месте и тянуть ближайшую
+    // ручку изгиба. Обычные стрелки по-прежнему только выделяются кликом.
+    const arrowHit = e.target.closest('.arrow__hit');
+    if (arrowHit && e.button === 0) {
+      const ag = arrowHit.closest('.arrow');
+      const id = ag && ag.dataset.id;
+      const n = id ? nodes.get(id) : null;
+      if (n && selectedIds.has(id) &&
+          (n.shape === 'elbow' || n.shape === 'curved-manual')) {
+        const p = screenToWorld(e.clientX, e.clientY);
+        const geo = arrowGeometry(n);
+        let best = null;
+        (geo.handles || []).forEach(h => {
+          if (h.kind !== 'bend' && h.kind !== 'point') return;
+          const d = Math.hypot(h.x - p.x, h.y - p.y);
+          if (!best || d < best.d) best = { h, d };
+        });
+        if (best) {
+          startArrowDrag(e, id, best.h.kind, best.h.axis, best.h.index);
+          return;
+        }
+      }
+      e.preventDefault();
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      if (id) {
+        if (e.shiftKey) toggleSelection(id);
+        else selectOnly(id);
+      }
       return;
     }
 
@@ -2197,7 +2853,8 @@ window.Board = (function () {
     if (arrowEl) {
       e.preventDefault();
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-      selectOnly(arrowEl.dataset.id);
+      if (e.shiftKey) toggleSelection(arrowEl.dataset.id);
+      else selectOnly(arrowEl.dataset.id);
       return;
     }
 
@@ -2449,12 +3106,10 @@ window.Board = (function () {
     const r = marquee.rect;
     const ids = [...marquee.base];
     nodes.forEach(n => {
-      const el = nodeEls.get(n.id);
-      if (!el) return;
       if (isLockedByOther(n.id)) return;
-      const bx2 = n.x + (el.offsetWidth || 0);
-      const by2 = n.y + (el.offsetHeight || 0);
-      if (r.x < bx2 && r.x2 > n.x && r.y < by2 && r.y2 > n.y) ids.push(n.id);
+      const b = worldBoundsOf(n);
+      if (!b) return;
+      if (r.x < b.x2 && r.x2 > b.x && r.y < b.y2 && r.y2 > b.y) ids.push(n.id);
     });
     setSelection(ids);
     marquee = null;
@@ -2475,6 +3130,13 @@ window.Board = (function () {
 
   function onMouseMove(e) {
     lastCursorWorld = screenToWorld(e.clientX, e.clientY);
+    if (activeTool === 'arrow') updateArrowCursor(e);
+    else if (activeTool === 'frame' && figurePreview) {
+      const r = viewport.getBoundingClientRect();
+      figurePreview.style.left = (e.clientX - r.left) + 'px';
+      figurePreview.style.top = (e.clientY - r.top) + 'px';
+      figurePreview.classList.remove('hidden');
+    }
     // Пока идёт активное действие (тащим, панорамируем, рисуем стрелку…),
     // обновляем курсор у других участников. Обычное движение мышью — нет.
     if (arrowDrag || arrowDraw || resizing || marquee || panning || dragGroup) {
@@ -2747,6 +3409,7 @@ window.Board = (function () {
     if (e.key === 't' || e.key === '3') setTool('text');
     if (e.key === 'i' || e.key === '5') setTool('image');
     if (e.key === 'f' || e.key === '4') setTool('frame');
+    if (e.key === 'a' || e.key === '6') setTool('arrow');
   }
 
   function onKeyUp(e) {
@@ -2781,7 +3444,10 @@ window.Board = (function () {
     getNode: (id) => nodes.get(id),
     getEl: (id) => nodeEls.get(id) || arrowEls.get(id),
     singleId: () => (selectedIds.size === 1 ? [...selectedIds][0] : null),
+    selectedIds: () => [...selectedIds],
     selectionCount: () => selectedIds.size,
+    updateArrow,
+    setActiveArrowShape,
     isLocked: (id) => isLockedByOther(id),
     applyTextStyle: applyNodeTextStyle,
     applyAppearance: applyNodeAppearance,
@@ -2796,12 +3462,14 @@ window.Board = (function () {
     setArrowStyle,
     copySelected,
     cutSelected,
+    addArrowPoint,
     pasteClipboard,
     hasClipboard: () => clipboard.length > 0,
     duplicateSelected,
     deleteSelected,
     resetImageSize,
     selectOnly,
+    setSelection,
     selectionBounds,
     alignSelection,
     distributeSelection,

@@ -36,11 +36,22 @@ window.Settings = (function () {
   ];
   const ARROW_SHAPES = [
     { value: 'straight', label: 'Прямая' },
-    { value: 'curved', label: 'Гибкая (360°)' },
-    { value: 'elbow', label: 'Гибкая (вручную)' }
+    { value: 'elbow', label: 'Прямая вручную' },
+    { value: 'curved', label: 'Гибкая' },
+    { value: 'curved-manual', label: 'Гибкая вручную' }
   ];
 
-  const DEFAULTS = { zoomStep: 0.2, theme: 'light', arrowShape: 'straight', resizeStep: 10 };
+  const TOOLBAR_POSITIONS = [
+    { value: 'top', label: 'Сверху' },
+    { value: 'right', label: 'Справа' },
+    { value: 'bottom', label: 'Снизу' },
+    { value: 'left', label: 'Слева' }
+  ];
+
+  const DEFAULTS = {
+    zoomStep: 0.2, theme: 'light', arrowShape: 'straight',
+    resizeStep: 10, toolbarPosition: 'top'
+  };
 
   let local = load();
   let ctx = null;          // { projectId, project }
@@ -59,10 +70,16 @@ window.Settings = (function () {
     else document.documentElement.dataset.theme = t;
   }
 
+  function applyToolbarPosition() {
+    const p = local.toolbarPosition || DEFAULTS.toolbarPosition;
+    document.body.setAttribute('data-toolbar-pos', p);
+  }
+
   function setLocal(patch) {
     local = Object.assign({}, local, patch);
     persist();
     if (patch.theme !== undefined) applyTheme();
+    if (patch.toolbarPosition !== undefined) applyToolbarPosition();
   }
 
   function el(tag, cls, text) {
@@ -118,7 +135,17 @@ window.Settings = (function () {
       const sw = e.target.closest('.theme-swatch');
       if (sw) { setLocal({ theme: sw.dataset.themeId }); refreshLocal(); return; }
       const sh = e.target.closest('.shape-swatch');
-      if (sh) { setLocal({ arrowShape: sh.dataset.shape }); refreshLocal(); return; }
+      if (sh) {
+        setLocal({ arrowShape: sh.dataset.shape });
+        const boardCtx = window.Board && window.Board.ctx;
+        if (boardCtx && boardCtx.setActiveArrowShape) {
+          boardCtx.setActiveArrowShape(sh.dataset.shape);
+        }
+        refreshLocal();
+        return;
+      }
+      const tp = e.target.closest('.toolbar-pos-btn');
+      if (tp) { setLocal({ toolbarPosition: tp.dataset.toolbarPos }); refreshLocal(); return; }
     });
 
     setTimeout(() => document.addEventListener('mousedown', onDocDown, true), 0);
@@ -224,6 +251,19 @@ window.Settings = (function () {
     stepRow.appendChild(stepInput);
     sec.appendChild(stepRow);
 
+    sec.appendChild(el('div', 'settings-label', 'Положение панели инструментов'));
+    const posGrid = el('div', 'toolbar-pos-grid');
+    TOOLBAR_POSITIONS.forEach(p => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'toolbar-pos-btn' +
+        ((local.toolbarPosition || DEFAULTS.toolbarPosition) === p.value ? ' is-active' : '');
+      b.dataset.toolbarPos = p.value;
+      b.textContent = p.label;
+      posGrid.appendChild(b);
+    });
+    sec.appendChild(posGrid);
+
     const shapeLbl = el('div', 'settings-label', 'Начальная форма стрелок');
     shapeLbl.style.marginTop = '18px';
     sec.appendChild(shapeLbl);
@@ -317,7 +357,9 @@ window.Settings = (function () {
   function resizeStep() { return Number(local.resizeStep) || DEFAULTS.resizeStep; }
 
   applyTheme();
+  applyToolbarPosition();
   document.addEventListener('DOMContentLoaded', applyTheme);
+  document.addEventListener('DOMContentLoaded', applyToolbarPosition);
 
   return {
     openPopup,

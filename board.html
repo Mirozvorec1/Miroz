@@ -20,6 +20,7 @@
         </div>
       </div>
       <input id="board-title" class="board-title" value="Проект" spellcheck="false" />
+      <button id="btn-project-info" class="btn btn--ghost board-title-edit board-title-info" type="button" title="Информация о проекте" aria-label="Информация о проекте">i</button>
       <button id="btn-project-settings" class="btn btn--ghost board-title-edit" type="button" title="Настройки проекта" aria-label="Настройки проекта">
         <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
           <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
@@ -44,10 +45,65 @@
           data-tip="Изображение · вставить картинку с устройства (I или 5)">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="M21 16l-5.5-5.5L4 20"/></svg>
         </button>
-        <button class="tool" type="button" data-tool="frame" title="Фигура — рамка/квадрат (F или 4)"
-          data-tip="Фигура · рамка и квадрат (F или 4)">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="1.5" stroke-dasharray="4 3"/></svg>
-        </button>
+        <div class="tool-figure">
+          <button class="tool tool--tab" type="button" id="btn-arrow" data-tool="arrow"
+            title="Стрелка — выбрать форму и провести линию (A)"
+            data-tip="Стрелка · выбрать форму и провести линию (A)">
+            <span id="arrow-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19L20 5"/><path d="M13 5h7v7"/></svg></span>
+            <span class="tool__caret" aria-hidden="true">▾</span>
+          </button>
+          <div id="arrows-popover" class="figures-popover hidden">
+            <div class="figures-popover__title">Стрелки</div>
+            <div class="figures-popover__grid figures-popover__grid--arrows">
+              <button class="figure-btn is-active" type="button" data-arrow-shape="straight" title="Прямая">
+                <svg viewBox="0 0 24 24"><path d="M3 20L21 4"/><path d="M13 4h8v8"/></svg>
+              </button>
+              <button class="figure-btn" type="button" data-arrow-shape="elbow" title="Прямая вручную">
+                <svg viewBox="0 0 24 24"><path d="M3 20H12V4H21"/><path d="M16 4h5v5"/></svg>
+              </button>
+              <button class="figure-btn" type="button" data-arrow-shape="curved" title="Гибкая">
+                <svg viewBox="0 0 24 24"><path d="M3 20C9 20 15 4 21 4"/><path d="M15 4h6v6"/></svg>
+              </button>
+              <button class="figure-btn" type="button" data-arrow-shape="curved-manual" title="Гибкая вручную">
+                <svg viewBox="0 0 24 24"><path d="M3 20C9 20 15 4 21 4"/><circle cx="9" cy="16" r="2"/><circle cx="15" cy="8" r="2"/><path d="M16 4h5v5"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="tool-figure">
+          <button class="tool tool--tab" type="button" id="btn-figure" data-tool="frame"
+            title="Фигуры — выбрать форму (F или 4)"
+            data-tip="Фигуры · выбрать форму (F или 4)">
+            <span id="figure-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="1.5" stroke-dasharray="4 3"/></svg></span>
+            <span class="tool__caret" aria-hidden="true">▾</span>
+          </button>
+          <div id="figures-popover" class="figures-popover hidden">
+            <div class="figures-popover__title">Фигуры</div>
+            <div class="figures-popover__grid">
+              <button class="figure-btn is-active" type="button" data-figure="rect" title="Квадрат">
+                <svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="1"/></svg>
+              </button>
+              <button class="figure-btn" type="button" data-figure="rectangle" title="Прямоугольник">
+                <svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="1"/></svg>
+              </button>
+              <button class="figure-btn" type="button" data-figure="ellipse" title="Эллипс">
+                <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="9" ry="6.5"/></svg>
+              </button>
+              <button class="figure-btn" type="button" data-figure="diamond" title="Ромб">
+                <svg viewBox="0 0 24 24"><polygon points="12,3 21,12 12,21 3,12"/></svg>
+              </button>
+              <button class="figure-btn" type="button" data-figure="triangle" title="Треугольник">
+                <svg viewBox="0 0 24 24"><polygon points="12,3 21,20 3,20"/></svg>
+              </button>
+              <button class="figure-btn" type="button" data-figure="triangle-down" title="Треугольник вниз">
+                <svg viewBox="0 0 24 24"><polygon points="3,4 21,4 12,21"/></svg>
+              </button>
+              <button class="figure-btn" type="button" data-figure="circle" title="Круг">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="board-bar__spacer"></div>
       <div class="board-bar__zoom">
@@ -87,6 +143,7 @@
   <script src="js/presence.js"></script>
   <script src="js/settings.js"></script>
   <script src="js/project-settings.js"></script>
+  <script src="js/project-info.js"></script>
   <script src="js/board.js"></script>
   <script src="js/element-menu.js"></script>
   <script src="js/contextmenu.js"></script>

@@ -375,6 +375,7 @@ html, body {
   flex: 0 0 auto;
 }
 .board-title-edit:hover { color: var(--primary); }
+.board-title-info { font-family: Georgia, "Times New Roman", serif; font-size: 15px; font-weight: 700; }
 
 .board-bar__tools {
   display: flex;
@@ -382,6 +383,39 @@ html, body {
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 10px;
+}
+/* Положение панели инструментов задаётся в локальных настройках. */
+body[data-toolbar-pos="left"] .board-bar__tools,
+body[data-toolbar-pos="right"] .board-bar__tools,
+body[data-toolbar-pos="bottom"] .board-bar__tools {
+  position: fixed;
+  z-index: 60;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+}
+body[data-toolbar-pos="left"] .board-bar__tools { left: 12px; top: 50%; transform: translateY(-50%); flex-direction: column; }
+body[data-toolbar-pos="right"] .board-bar__tools { right: 12px; top: 50%; transform: translateY(-50%); flex-direction: column; }
+body[data-toolbar-pos="bottom"] .board-bar__tools { left: 50%; bottom: 12px; transform: translateX(-50%); }
+body[data-toolbar-pos="left"] .board-bar__tools .tool-figure,
+body[data-toolbar-pos="right"] .board-bar__tools .tool-figure { flex-direction: column; align-items: center; }
+body[data-toolbar-pos="right"] .board-bar__tools .figures-popover {
+  left: auto; right: calc(100% + 10px); top: 50%; transform: translateY(-50%);
+}
+body[data-toolbar-pos="left"] .board-bar__tools .figures-popover {
+  left: calc(100% + 10px); top: 50%; transform: translateY(-50%);
+}
+body[data-toolbar-pos="bottom"] .board-bar__tools .figures-popover {
+  top: auto; bottom: calc(100% + 10px);
+}
+/* Подсказки в вертикальном режиме уходят в сторону от панели. */
+body[data-toolbar-pos="left"] .tool[data-tip]::after {
+  left: calc(100% + 8px); top: 50%; bottom: auto; transform: translateY(-50%);
+}
+body[data-toolbar-pos="right"] .tool[data-tip]::after {
+  left: auto; right: calc(100% + 8px); top: 50%; bottom: auto; transform: translateY(-50%);
+}
+body[data-toolbar-pos="bottom"] .tool[data-tip]::after {
+  top: auto; bottom: calc(100% + 8px);
 }
 .tool {
   position: relative;
@@ -430,6 +464,78 @@ html, body {
 }
 .tool[data-tip]:hover::after,
 .tool[data-tip]:focus-visible::after { opacity: 1; }
+
+/* Вкладка фигур в панели инструментов */
+.tool-figure { position: relative; display: flex; align-items: center; gap: 2px; }
+.tool--tab { width: 34px; position: relative; }
+.tool--tab svg { width: 17px; height: 17px; }
+.tool__caret {
+  position: absolute;
+  right: 3px;
+  bottom: 1px;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--text-soft);
+  opacity: .8;
+}
+.tool--tab.is-active .tool__caret,
+.tool--tab:hover .tool__caret { color: inherit; opacity: 1; }
+.figures-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 1005;
+  width: 190px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+}
+.figures-popover__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-soft);
+  margin-bottom: 10px;
+}
+.figures-popover__grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.figure-btn {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.figure-btn:hover { background: var(--bg-soft); }
+.figure-btn.is-active { background: var(--accent); color: #1a1a1a; border-color: var(--accent-strong); }
+.figure-btn svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+.figures-popover__grid--arrows { grid-template-columns: repeat(4, 1fr); }
+.arrow-cursor {
+  position: absolute;
+  z-index: 9;
+  width: 12px;
+  height: 12px;
+  margin: -6px;
+  border: 2px solid var(--primary);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .25);
+  pointer-events: none;
+}
+.arrow-cursor.is-snapped { background: var(--primary); border-color: #fff; }
 
 .board-bar__zoom { display: flex; align-items: center; gap: 2px; }
 .zoom-value {
@@ -517,6 +623,11 @@ html, body {
   outline: none;
   overflow-wrap: break-word;
 }
+.canvas-node--sticky.is-placeholder::before {
+  content: attr(data-placeholder);
+  opacity: .55;
+  pointer-events: none;
+}
 .canvas-node--text {
   min-width: 60px;
   max-width: 360px;
@@ -540,10 +651,26 @@ html, body {
   user-select: none;
 }
 .canvas-node--frame {
-  width: 320px;
-  height: 220px;
-  border: 2px dashed #b9bfcb;
-  background: rgba(255, 255, 255, .5);
+  width: 180px;
+  height: 180px;
+  border: none;
+  background: transparent;
+}
+.figure-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.figure-shape { fill: #ffffff; stroke: #1a1a1a; stroke-width: 2; }
+.figure-preview {
+  position: absolute;
+  z-index: 8;
+  width: 180px;
+  height: 180px;
+  pointer-events: none;
+  opacity: .85;
+}
+.figure-preview .figure-shape {
+  fill: rgba(140, 148, 160, .28);
+  stroke: #7b8494;
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
 }
 
 .canvas-hint {
@@ -631,25 +758,42 @@ html, body {
 .sel-box--text .sel-handle[data-corner="n"],
 .sel-box--text .sel-handle[data-corner="s"] { display: none; }
 
-/* Шарики-коннекторы (как в Miro): чуть дальше ручек, со всех сторон. */
+/* Микро-иконки стрелок по сторонам выделенного объекта: явно говорят,
+   что это создание connection, а не поворот. */
 .sel-ball {
   display: none;
   position: absolute;
-  width: 12px;
-  height: 12px;
-  margin: -6px;
+  width: 16px;
+  height: 16px;
+  margin: -8px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
   background: #fff;
   border: 1.5px solid var(--primary);
-  border-radius: 50%;
+  border-radius: 5px;
   cursor: crosshair;
   pointer-events: auto;
 }
-.sel-box--single:not(.sel-box--arrow) .sel-ball { display: block; }
+.sel-box--single:not(.sel-box--arrow) .sel-ball { display: flex; }
 .sel-ball[data-ball="n"] { left: 50%; top: -22px; }
 .sel-ball[data-ball="s"] { left: 50%; bottom: -22px; }
 .sel-ball[data-ball="e"] { right: -22px; top: 50%; }
 .sel-ball[data-ball="w"] { left: -22px; top: 50%; }
+.sel-ball svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.sel-ball[data-ball="n"] svg { transform: rotate(-90deg); }
+.sel-ball[data-ball="s"] svg { transform: rotate(90deg); }
+.sel-ball[data-ball="w"] svg { transform: rotate(180deg); }
 .sel-ball:hover { background: var(--primary); }
+.sel-ball:hover svg { stroke: #fff; }
 
 /* Стрелки-коннекторы (SVG-слой поверх элементов). */
 .arrow-layer { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
@@ -657,12 +801,12 @@ html, body {
 .arrow__line { fill: none; }
 .arrow__hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
 .arrow__handle {
-  fill: var(--primary);
-  stroke: #fff;
-  stroke-width: 1.5;
   pointer-events: none;
   cursor: grab;
 }
+.arrow__hitarea { fill: transparent; stroke: none; }
+.arrow__dot { fill: var(--primary); stroke: #fff; stroke-width: 1.5; }
+.arrow__bend-dot { fill: var(--primary); stroke: #fff; stroke-width: 1.5; }
 .arrow.is-selected .arrow__handle { pointer-events: all; }
 .arrow:not(.is-selected) .arrow__handle { display: none; }
 .arrow__handle:active { cursor: grabbing; }
@@ -1270,7 +1414,24 @@ html, body {
 .theme-swatch[data-theme-id="brown"] { background: #4a3428; }
 .theme-swatch[data-theme-id="dark-green"] { background: #0f2318; }
 .theme-swatch[data-theme-id="dark-red"] { background: #2a1013; }
-.shape-grid { display: flex; gap: 8px; }
+.shape-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.toolbar-pos-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.toolbar-pos-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 4px;
+  color: var(--text-soft);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.toolbar-pos-btn:hover { color: var(--text); border-color: var(--primary); }
+.toolbar-pos-btn.is-active {
+  color: var(--text);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
 .shape-swatch {
   flex: 1;
   padding: 8px 6px;
@@ -1300,8 +1461,16 @@ input[type="range"].settings-range { width: 100%; accent-color: var(--primary); 
 
 /* ---------- Плавающее меню элемента (текст / стрелка) ---------- */
 .em-panel { display: flex; align-items: stretch; gap: 2px; }
+.em-multi { align-items: center; }
+.em-group-controls { display: flex; align-items: stretch; gap: 2px; }
 .em-align-btn { padding: 6px; }
-.em-align-btn .em-align-ico { width: 18px; height: 18px; display: block; }
+.em-align-btn .em-align-ico,
+.tt-menu__item .em-align-ico {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  display: block;
+}
 .em-align-btn:disabled { opacity: .35; cursor: default; }
 .em-color-dot {
   display: inline-block;
